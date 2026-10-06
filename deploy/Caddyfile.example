@@ -1,0 +1,4 @@
+# Caddy gets the TLS certificate automatically and proxies WebSockets as is.
+jam.example.com {
+    reverse_proxy 127.0.0.1:3000
+}

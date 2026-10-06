@@ -1,0 +1,17 @@
+{
+  "name": "telegram-jam-server",
+  "version": "0.9.0",
+  "private": true,
+  "description": "Memory-limited WebSocket synchronization server for Telegram Jam.",
+  "type": "module",
+  "scripts": {
+    "start": "node --max-old-space-size=128 src/index.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "ws": "^8.18.1"
+  }
+}

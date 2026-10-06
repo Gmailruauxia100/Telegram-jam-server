@@ -1,0 +1,34 @@
+# Telegram Jam behind an existing Nginx. Replace jam.example.com everywhere.
+
+server {
+    listen 80;
+    server_name jam.example.com;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name jam.example.com;
+
+    # Use your existing certificates, e.g. from certbot.
+    ssl_certificate /etc/letsencrypt/live/jam.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/jam.example.com/privkey.pem;
+
+    # WebSocket endpoint used by the plugin.
+    location = /jam {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        # The plugin pings every 25 s; keep idle sockets open well beyond that.
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    # Landing page and /health.
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_set_header Host $host;
+    }
+}

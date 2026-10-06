@@ -1,0 +1,22 @@
+[Unit]
+Description=Telegram Jam WebSocket server
+After=network.target
+
+[Service]
+Type=simple
+User=telegram-jam
+WorkingDirectory=/opt/telegram-jam/server
+EnvironmentFile=/opt/telegram-jam/server/.env
+ExecStart=/usr/bin/node --max-old-space-size=128 src/index.js
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telegram-jam
+MemoryMax=192M
+TasksMax=128
+
+[Install]
+WantedBy=multi-user.target

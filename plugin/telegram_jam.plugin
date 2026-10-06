@@ -1,0 +1,2349 @@
+import base64
+import hashlib
+import json
+import secrets
+import threading
+import time
+import traceback
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import escape
+from urllib.parse import parse_qs, urlparse
+from typing import Any, List
+
+from base_plugin import BasePlugin, HookResult, HookStrategy, MenuItemData, MenuItemType, MethodHook
+from ui.settings import Header, Input, Selector, Switch, Text, Divider
+from ui.alert import AlertDialogBuilder
+from ui.bulletin import BulletinHelper
+from android_utils import copy_to_clipboard, run_on_ui_thread
+from client_utils import get_account_instance, get_last_fragment, get_messages_controller, get_messages_storage, send_request
+from hook_utils import find_class, get_private_field
+from org.telegram.tgnet import ConnectionsManager, RequestDelegate
+from org.telegram.messenger import ApplicationLoader, MediaController, MessageObject, NotificationCenter, SendMessagesHelper, UserConfig
+from org.telegram.messenger.browser import Browser
+from org.telegram.tgnet import TLRPC
+from java.util import ArrayList
+from java.lang import Integer
+
+__id__ = "telegram_jam"
+__name__ = "Telegram Jam"
+__description__ = (
+    "Создаёт явную Jam-комнату в личном чате. Сервер синхронизирует только "
+    "состояние будущего плеера и не получает аудио, звонки или данные Telegram."
+)
+__author__ = "@shit_plugins"
+__version__ = "0.9.0"
+__icon__ = "exteraPlugins/1"
+__app_version__ = ">=12.1.1"
+__sdk_version__ = ">=1.4.3.3"
+__requirements__ = ["websocket-client>=1.8.0"]
+
+DEFAULT_PREFIX = "!"
+
+PANEL_HTML = r'''<!doctype html><html lang="__LANG__"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Telegram Jam</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@500;700&display=swap" rel="stylesheet">
+<style>
+:root{color-scheme:dark;--bg-1:#1a0f28;--bg-2:#442064;--bg-3:#7a2db2;--card-strong:rgba(224,224,236,.58);--card-dark:rgba(24,18,36,.66);--text-light:#fbf7ff;--text-dark:#171321;--muted:rgba(255,255,255,.78);--line:rgba(255,255,255,.18);--accent:#ff44f0;--accent-2:#7f5cff;--shadow:0 18px 46px rgba(0,0,0,.18)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{min-height:100%}
+body{margin:0;font-family:"Comfortaa",sans-serif;font-weight:700;color:var(--text-light);overflow-x:hidden;background:radial-gradient(circle at top left,rgba(255,68,240,.22),transparent 28%),radial-gradient(circle at bottom right,rgba(127,92,255,.26),transparent 30%),linear-gradient(135deg,var(--bg-1) 0%,var(--bg-2) 45%,var(--bg-3) 100%);background-attachment:fixed}
+.glow{position:fixed;width:34rem;height:34rem;border-radius:50%;filter:blur(70px);opacity:.24;pointer-events:none}
+.glow.l{top:-10rem;left:-10rem;background:#ff3adf}.glow.r{right:-12rem;bottom:-12rem;background:#5d83ff}
+.shell{position:relative;width:min(460px,calc(100% - 32px));margin:0 auto;padding:calc(env(safe-area-inset-top) + 24px) 0 calc(env(safe-area-inset-bottom) + 32px);display:grid;gap:14px}
+.top{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.top h1{margin:0;font-size:1.6rem;line-height:1}
+.pill{display:inline-flex;align-items:center;min-height:32px;padding:0 14px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.1);font-size:.82rem}
+.pill.host{background:linear-gradient(90deg,var(--accent),var(--accent-2));border-color:transparent}
+.now{display:grid;grid-template-columns:92px minmax(0,1fr);gap:16px;align-items:center;padding:16px;border:1px solid rgba(255,255,255,.2);border-radius:22px;background:linear-gradient(180deg,rgba(214,214,228,.44),rgba(182,182,198,.36));backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+.cover{display:grid;place-items:center;aspect-ratio:1;border-radius:18px;border:1px solid rgba(255,255,255,.16);background:var(--card-strong);color:var(--text-dark);font-size:2.4rem;transition:transform .4s ease}
+.cover.on{animation:beat 1.4s ease-in-out infinite}@keyframes beat{50%{transform:scale(1.06)}}
+.copy{min-width:0;display:grid;gap:6px}
+.title{margin:0;color:var(--text-dark);font-size:1.15rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.status{margin:0;color:rgba(23,19,33,.72);font-size:.84rem;line-height:1.4}
+.panel{padding:18px;border:1px solid rgba(255,255,255,.16);border-radius:22px;background:var(--card-dark);backdrop-filter:blur(14px);box-shadow:var(--shadow)}
+.ctl{transition:opacity .18s ease}.ctl.off{opacity:.45}.ctl.off *{pointer-events:none}
+input[type=range]{-webkit-appearance:none;appearance:none;display:block;width:100%;height:6px;margin:6px 0 10px;border-radius:9px;outline:0;background:linear-gradient(90deg,var(--accent),var(--accent-2)) 0/var(--p,0%) 100% no-repeat,rgba(255,255,255,.16)}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:20px;height:20px;border-radius:50%;background:#fff;border:0;box-shadow:0 2px 10px rgba(0,0,0,.4)}
+.time{display:flex;justify-content:space-between;color:var(--muted);font-size:.78rem;font-variant-numeric:tabular-nums}
+.buttons{display:flex;justify-content:center;align-items:center;gap:16px;margin-top:14px}
+button{font:inherit;color:#fff;cursor:pointer;transition:background .18s ease,transform .18s ease,opacity .18s ease}
+button:active{transform:scale(.95)}
+.round{width:52px;height:52px;border-radius:50%;border:1px solid var(--line);background:rgba(255,255,255,.1);font-size:.85rem}
+.play{width:70px;height:70px;border-radius:50%;border:0;display:grid;place-items:center;background:linear-gradient(135deg,var(--accent),var(--accent-2));box-shadow:0 10px 30px rgba(255,68,240,.35)}
+.play svg{width:28px;height:28px;fill:#fff}
+.hint{margin:12px 0 0;text-align:center;color:var(--muted);font-size:.8rem;line-height:1.5}
+.peer{display:flex;align-items:center;gap:10px;padding:5px 0;font-size:.92rem}
+.peer small{margin-left:auto;color:var(--muted);font-size:.75rem}
+.dot{width:9px;height:9px;border-radius:50%;background:rgba(255,255,255,.25)}.dot.on{background:#7dffb0;box-shadow:0 0 10px #7dffb0}
+.row{display:flex;align-items:center;justify-content:space-between;gap:14px}
+.row p{margin:4px 0 0;color:var(--muted);font-size:.78rem;line-height:1.45}
+.switch{flex:none;position:relative;width:52px;height:30px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.12)}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:#fff;transition:left .2s ease}
+.switch.on{background:linear-gradient(90deg,var(--accent),var(--accent-2));border-color:transparent}.switch.on::after{left:25px}
+.actions{display:grid;gap:10px}
+.btn{min-height:46px;padding:0 18px;border-radius:999px;border:1px solid var(--line);background:rgba(255,255,255,.12)}
+.btn.danger{background:rgba(255,68,140,.28);border-color:rgba(255,120,170,.4)}
+.empty{text-align:center;padding:28px 18px}.empty p{color:var(--muted);line-height:1.6;margin:8px 0 0;font-size:.9rem}
+[hidden]{display:none!important}
+</style></head><body>
+<div class="glow l"></div><div class="glow r"></div>
+<main class="shell">
+<header class="top"><h1>Telegram Jam</h1><span id="role" class="pill"></span></header>
+<section id="idle" class="panel empty"><div style="font-size:2.4rem">♫</div><p id="idleText"></p></section>
+<div id="live" hidden style="display:grid;gap:14px">
+<section class="now"><div id="cover" class="cover">♫</div><div class="copy"><p id="title" class="title">—</p><p id="status" class="status"></p></div></section>
+<section class="panel"><div id="ctl" class="ctl">
+<input id="seek" type="range" min="0" max="1000" value="0"><div class="time"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+<div class="buttons"><button id="back" class="round">−10</button><button id="pp" class="play"></button><button id="fwd" class="round">+10</button></div></div>
+<p id="perm" class="hint"></p></section>
+<section class="panel"><div class="peer"><i id="d1" class="dot"></i><span id="n1"></span><small id="tagHost"></small></div><div class="peer"><i id="d2" class="dot"></i><span id="n2"></span><small id="tagGuest"></small></div></section>
+<section id="host" class="panel row"><div><b id="swLabel"></b><p id="modeHint"></p></div><button id="sw" class="switch"></button></section>
+<section class="actions"><button id="leave" class="btn"></button><button id="end" class="btn danger"></button></section>
+</div></main>
+<script>
+const T="__TOKEN__",L=__I18N__,$=i=>document.getElementById(i);
+$("idleText").innerHTML=L.idle;$("tagHost").textContent=L.hostTag;$("tagGuest").textContent=L.guestTag;$("swLabel").textContent=L.guestControls;$("sw").setAttribute("aria-label",L.guestControls);$("end").textContent=L.end;
+const PLAY='<svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>',PAUSE='<svg viewBox="0 0 24 24"><path d="M6 5h4v14H6zM14 5h4v14h-4z"/></svg>';
+let S={active:false},t0=performance.now(),drag=false,busy=0;
+const fmt=m=>{m=Math.max(0,m)/1000|0;return(m/60|0)+":"+String(m%60).padStart(2,"0")};
+async function api(p){try{const r=await fetch(p+(p.includes("?")?"&":"?")+"token="+T,{cache:"no-store"});return await r.json()}catch(e){return null}}
+async function poll(){if(Date.now()<busy)return;const s=await api("/api");if(s){S=s;t0=performance.now();render()}}
+function act(a,v){busy=Date.now()+700;api("/act?action="+a+(v===undefined?"":"&value="+encodeURIComponent(v)));setTimeout(poll,750)}
+const pos=()=>Math.min((S.position_ms||0)+(S.playing?performance.now()-t0:0),S.duration_ms||Infinity);
+function render(){const a=!!S.active,h=S.role==="leader";
+$("idle").hidden=a;$("live").hidden=!a;$("role").textContent=a?(h?L.host:L.guest):L.out;$("role").className="pill"+(a&&h?" host":"");
+if(!a)return;
+$("title").textContent=S.has_track?S.track:L.noTrack;
+$("status").textContent=S.loading?L.loading:!S.has_track?L.hintPick:S.playing?L.playing:L.paused;
+$("cover").className="cover"+(S.playing?" on":"");$("pp").innerHTML=S.playing?PAUSE:PLAY;
+$("ctl").className="ctl"+(S.can_control&&S.has_track?"":" off");
+$("perm").textContent=h?L.permHost:S.can_control?L.permGuestOn:L.permGuestOff;
+$("dur").textContent=fmt(S.duration_ms||0);
+$("n1").textContent=S.leader_name;$("n2").textContent=S.guest_name;
+$("d1").className="dot"+(S.leader_connected?" on":"");$("d2").className="dot"+(S.guest_connected?" on":"");
+$("host").hidden=!h;$("sw").className="switch"+(S.control_mode==="both"?" on":"");
+$("modeHint").textContent=S.control_mode==="both"?L.modeBoth:L.modeLeader;
+$("end").hidden=!h;$("leave").textContent=h&&S.guest_connected?L.leaveHand:L.leave;tick()}
+function tick(){if(drag||!S.active)return;const d=S.duration_ms||0,p=d?pos():0,r=d?p/d:0;$("seek").value=r*1000;$("seek").style.setProperty("--p",r*100+"%");$("cur").textContent=fmt(p)}
+$("seek").oninput=e=>{drag=true;$("cur").textContent=fmt(e.target.value/1000*(S.duration_ms||0));e.target.style.setProperty("--p",e.target.value/10+"%")};
+$("seek").onchange=e=>{const m=Math.round(e.target.value/1000*(S.duration_ms||0));S.position_ms=m;t0=performance.now();drag=false;act("seek",m)};
+$("pp").onclick=()=>{S.position_ms=pos();S.playing=!S.playing;t0=performance.now();render();act("toggle")};
+$("back").onclick=()=>act("skip",-10000);$("fwd").onclick=()=>act("skip",10000);
+$("sw").onclick=()=>{S.control_mode=S.control_mode==="both"?"leader":"both";render();act("mode",S.control_mode)};
+$("leave").onclick=()=>act("leave");$("end").onclick=()=>act("end");
+poll();setInterval(poll,1500);setInterval(tick,250);
+</script></body></html>
+'''
+DEFAULT_SERVER_URL = "wss://jam.ltyt.me/jam"
+CHANNEL_URL = "https://t.me/shit_plugins"
+PROTOCOL_VERSION = 2
+MIN_SERVER_PROTOCOL = 2
+
+ABOUT_SERVER_TEXT_EN = "The Jam server only syncs the player: which track is playing, pause and position.\n\nIt never receives audio, calls, messages or Telegram account data. Tracks travel as regular messages in your private chat and are deleted after the Jam if that is enabled in the settings.\n\nRooms live only in the server's memory and disappear when the Jam ends. You can host your own server: the host's address is packed into the invite code, so the guest connects to the same server automatically."
+
+STRINGS_EN = {'Адрес Jam-сервера': 'Jam server address', 'Управление по умолчанию': 'Default control', 'Только хост': 'Host only', 'Хост и гость': 'Host and guest', 'Удалять копии треков после Jam': 'Delete track copies after Jam', 'Когда Jam закончится, удалить треки и служебные сообщения, которые плагин отправил в чат.': 'When the Jam ends, delete the tracks and service messages the plugin sent to the chat.', 'Панель Jam': 'Jam panel', 'Плеер и управление комнатой.': 'Player and room controls.', 'Команды': 'Commands', 'Список команд и префикс.': 'Command list and prefix.', 'Диагностика': 'Diagnostics', 'Журнал работы для отправки разработчику.': 'Activity log to send to the developer.', 'О сервере': 'About the server', 'Закрыть': 'Close', 'Репозиторий скоро появится.': 'The repository is coming soon.', 'Команды Jam': 'Jam commands', 'Префикс команд': 'Command prefix', 'Создать Jam и отправить приглашение. То же, что пункт меню чата.': 'Create a Jam and send an invite. Same as the chat menu item.', '%sacceptjam <код>': '%sacceptjam <code>', 'Принять приглашение. Сервер берётся из кода.': 'Accept an invite. The server is taken from the code.', 'Отклонить приглашение.': 'Decline an invite.', 'Показать роль и режим управления.': 'Show your role and control mode.', 'Выйти из Jam. Хост передаёт управление гостю.': 'Leave the Jam. A leaving host hands control to the guest.', 'Завершить Jam для всех. Только хост.': 'End the Jam for everyone. Host only.', 'Чтобы поставить трек, просто включи его: в Jam-чате, в профиле или в другом чате.': 'To play a track, just start it: in the Jam chat, in a profile or in another chat.', 'Диагностика Jam': 'Jam diagnostics', 'Скопировать журнал': 'Copy log', 'Скопировать последние события для отправки разработчику.': 'Copy recent events to send to the developer.', 'Очистить журнал': 'Clear log', 'Удалить локальные диагностические записи.': 'Delete local diagnostic entries.', 'Последние события': 'Recent events', 'Журнал пока пуст.': 'The log is empty.', 'Не удалось выполнить команду Jam.': 'Could not run the Jam command.', 'Jam можно создать только в личном чате.': 'A Jam can only be created in a private chat.', 'Сначала заверши или покинь текущий Jam.': 'End or leave the current Jam first.', 'Укажи адрес Jam-сервера в настройках плагина.': 'Set the Jam server address in the plugin settings.', 'Jam можно принять только в личном чате.': 'A Jam can only be accepted in a private chat.', 'Скопируй команду принятия из приглашения.': 'Copy the accept command from the invite.', 'Код приглашения повреждён. Скопируй его целиком.': 'The invite code is damaged. Copy it in full.', 'Команда доступна только в личном чате.': 'This command works only in a private chat.', '🎵 Приглашение в Jam отклонено.': '🎵 Jam invite declined.', 'Приглашение отклонено.': 'Invite declined.', 'Активного Jam нет.': 'No active Jam.', 'Завершай Jam в том же личном чате, где он был создан.': 'End the Jam in the private chat where it was created.', 'Завершить Jam может только его создатель.': 'Only the host can end the Jam.', 'Jam завершён.': 'Jam ended.', 'Выйти можно из Jam текущего личного чата.': 'You can only leave the Jam of the current private chat.', 'Ты вышел из Jam. Хостом стал собеседник.': 'You left the Jam. The other person is now the host.', 'Ты вышел из Jam.': 'You left the Jam.', 'хост': 'host', 'гость': 'guest', 'хост и гость': 'host and guest', 'только хост': 'host only', 'Jam подключён (%s). Роль: %s. Управление: %s.': 'Jam connected (%s). Role: %s. Control: %s.', 'Соединение с Jam-сервером потеряно. Комната закрыта.': 'Lost connection to the Jam server. The room is closed.', 'Не удалось подключиться к Jam-серверу.': 'Could not connect to the Jam server.', 'Jam-сервер: %s': 'Jam server: %s', 'неизвестная ошибка': 'unknown error', '🎵 Звонок завершён, Jam остановлен.': '🎵 The call ended, Jam stopped.', 'Хост вышел. Теперь ты хост Jam.': 'The host left. You are now the Jam host.', 'Теперь ты гость Jam.': 'You are now a Jam guest.', '🎵 %s пригласил тебя в Jam.\n\nПринять:': '🎵 %s invited you to a Jam.\n\nAccept:', 'Jam создан. Приглашение отправлено.': 'Jam created. Invite sent.', '🎵 Я присоединился к Jam.': '🎵 I joined the Jam.', 'Ты присоединился к Jam.': 'You joined the Jam.', 'Хост забрал управление, трек не добавлен.': 'The host took back control, the track was not added.', 'Управление Jam: %s.': 'Jam control: %s.', 'Трек загружается. Ожидаю его появления в чате.': 'Track is loading. Waiting for it to appear in the chat.', 'Не удалось передать трек второму клиенту.': 'Could not pass the track to the other client.', 'Отправляю трек собеседнику, жду загрузки.': 'Sending the track to the other person, waiting for it to load.', 'Jam получил некорректные данные трека.': 'Jam received invalid track data.', 'Не нашёл аудиосообщение. Открой чат и дождись загрузки трека.': 'Audio not found. Open the chat and wait for the track to load.', 'Не удалось запустить Telegram-плеер.': 'Could not start the Telegram player.', 'Аудиосообщение': 'Audio', 'Проверяю, готов ли второй клиент к запуску трека.': 'Checking whether the other client is ready to play.', 'Не удалось определить аудиофайл для Jam.': 'Could not identify the audio file for the Jam.', 'Добавляю трек в Jam-чат и жду второй клиент.': 'Adding the track to the Jam chat and waiting for the other client.', 'Не удалось добавить внешний трек в Jam-чат.': 'Could not add the track to the Jam chat.', 'Второй клиент не получил трек за отведённое время.': 'The other client did not get the track in time.', 'Завершить Jam': 'End Jam', 'Выйти из Jam': 'Leave Jam', 'Запустить Jam': 'Start Jam', 'Звонок завершён, Jam остановлен.': 'The call ended, Jam stopped.', 'Нет подключения к Jam-серверу.': 'Not connected to the Jam server.', 'Не удалось отправить команду Jam-серверу.': 'Could not send the command to the Jam server.', 'Не удалось открыть локальную панель Jam.': 'Could not open the local Jam panel.', 'Трек не выбран': 'No track selected', 'Хост': 'Host', 'Ждём гостя': 'Waiting for guest', 'Управлять плеером может только хост.': 'Only the host can control the player.', 'Сначала добавь трек в Jam.': 'Add a track to the Jam first.', 'Журнал Jam очищен.': 'Jam log cleared.', 'Пользователь': 'User', 'Порт панели': 'Panel port', 'Пусто — любой свободный. Например: 8765.': 'Empty means any free port. For example: 8765.', 'Порт %s занят, панель открыта на другом.': 'Port %s is busy, the panel uses another one.', 'Обновление Jam': 'Jam update', 'Обновить': 'Update', 'Версия плагина: %s\nВерсия сервера: %s\nНужен плагин: %s или новее\nПоследний плагин: %s': 'Plugin version: %s\nServer version: %s\nRequired plugin: %s or newer\nLatest plugin: %s', 'Плагин устарел для этого Jam-сервера. Обнови его, чтобы создавать и принимать Jam.': 'This plugin is too old for this Jam server. Update it to create and join Jams.', 'Вышла новая версия плагина.': 'A new plugin version is available.', 'Ссылка на обновление не указана на сервере.': 'The server does not provide an update link.', 'Сервер устарел для этой версии плагина. Попроси владельца сервера обновить его.': 'The server is older than this plugin supports. Ask the server owner to update it.', 'По умолчанию: wss://jam.ltyt.me/jam. Гость подключится к серверу хоста автоматически.': "Default: wss://jam.ltyt.me/jam. A guest joins the host's server automatically."}
+
+PANEL_STRINGS = {'ru': {'title': 'Telegram Jam', 'host': 'Хост', 'guest': 'Гость', 'out': 'не в Jam', 'idle': 'Jam не запущен.<br>Открой личный чат и выбери «Запустить Jam» в меню.', 'noTrack': 'Трек не выбран', 'loading': 'Передаю трек собеседнику…', 'hintPick': 'Включи любой трек — из Jam-чата или профиля', 'playing': 'Сейчас играет', 'paused': 'На паузе', 'permHost': 'Ты хост: управление у тебя', 'permGuestOn': 'Хост разрешил тебе управлять плеером', 'permGuestOff': 'Плеером управляет хост', 'hostTag': 'хост', 'guestTag': 'гость', 'guestControls': 'Гость управляет плеером', 'modeBoth': 'Гость может ставить треки, паузу и перематывать', 'modeLeader': 'Сейчас управляешь только ты', 'leaveHand': 'Выйти и передать хоста', 'leave': 'Выйти из Jam', 'end': 'Завершить Jam'}, 'en': {'title': 'Telegram Jam', 'host': 'Host', 'guest': 'Guest', 'out': 'not in a Jam', 'idle': 'No Jam is running.<br>Open a private chat and choose “Start Jam” in the menu.', 'noTrack': 'No track selected', 'loading': 'Sending the track to the other person…', 'hintPick': 'Play any track — from the Jam chat or a profile', 'playing': 'Now playing', 'paused': 'Paused', 'permHost': 'You are the host: you are in control', 'permGuestOn': 'The host lets you control the player', 'permGuestOff': 'The host controls the player', 'hostTag': 'host', 'guestTag': 'guest', 'guestControls': 'Guest controls the player', 'modeBoth': 'The guest can play tracks, pause and seek', 'modeLeader': 'Only you are in control now', 'leaveHand': 'Leave and hand over host', 'leave': 'Leave Jam', 'end': 'End Jam'}}
+
+
+def _lang():
+    """Plugin language follows the Telegram app language: Russian or English."""
+    code = ""
+    try:
+        from org.telegram.messenger import LocaleController
+        controller = LocaleController.getInstance()
+        try:
+            code = str(controller.getCurrentLocale().getLanguage() or "")
+        except Exception:
+            info = controller.getCurrentLocaleInfo()
+            code = str(getattr(info, "shortName", "") or getattr(info, "pluralLangCode", "") or "")
+    except Exception:
+        try:
+            from java.util import Locale
+            code = str(Locale.getDefault().getLanguage() or "")
+        except Exception:
+            code = "ru"
+    return "ru" if code.lower().startswith("ru") else "en"
+
+
+def _t(text):
+    if _lang() == "ru":
+        return text
+    return STRINGS_EN.get(text, text)
+
+
+def _version_tuple(value):
+    parts = []
+    for part in str(value or "").split("."):
+        try:
+            parts.append(int(part))
+        except ValueError:
+            parts.append(0)
+    while parts and parts[-1] == 0:
+        parts.pop()
+    return tuple(parts)
+
+TRACK_READY_RETRY_MS = 2000
+TRACK_READY_MAX_RETRIES = 10
+PING_INTERVAL_S = 25
+CLEANUP_DELAY_MS = 1500
+CLEANUP_HISTORY_LIMIT = 100
+DEFAULT_SERVER_PATH = "/jam"
+INVITE_MARK = 0x80
+GITHUB_URL = ""  # TODO: link to the repository once it is published
+ABOUT_SERVER_TEXT = (
+    "Jam-сервер только синхронизирует плеер: какой трек играет, пауза и позиция.\n\n"
+    "Сервер не получает аудио, звонки, переписку или данные аккаунта Telegram. "
+    "Треки передаются обычными сообщениями в вашем личном чате и удаляются после Jam, "
+    "если это включено в настройках.\n\n"
+    "Комнаты живут только в памяти сервера и исчезают после завершения Jam. "
+    "Сервер можно поднять самостоятельно: адрес хоста зашит в код приглашения, "
+    "поэтому гость подключится к тому же серверу автоматически."
+)
+
+try:
+    from java.chaquopy import dynamic_proxy
+    NotificationCenterDelegate = dynamic_proxy(NotificationCenter.NotificationCenterDelegate)
+except Exception:
+    NotificationCenterDelegate = object
+
+try:
+    _RequestDelegateBase = dynamic_proxy(RequestDelegate)
+except Exception:
+    _RequestDelegateBase = None
+
+if _RequestDelegateBase is not None:
+    class _RequestDelegate(_RequestDelegateBase):
+        def __init__(self, callback):
+            super().__init__()
+            self.callback = callback
+
+        def run(self, response, error):
+            self.callback(response, error)
+else:
+    _RequestDelegate = None
+
+
+class _PlaybackHook(MethodHook):
+    def __init__(self, plugin, event_type):
+        super().__init__()
+        self.plugin = plugin
+        self.event_type = event_type
+
+    def after_hooked_method(self, param):
+        try:
+            self.plugin._on_playback_event(self.event_type, param)
+        except Exception:
+            self.plugin.log("[telegram_jam] playback hook error: " + traceback.format_exc())
+
+
+class _PlayerCloseHook(MethodHook):
+    def __init__(self, plugin):
+        super().__init__()
+        self.plugin = plugin
+
+    def after_hooked_method(self, _param):
+        try:
+            self.plugin._on_player_closed()
+        except Exception:
+            self.plugin._debug_exception("Player close hook error")
+
+
+class _CallEndedHook(MethodHook):
+    def __init__(self, plugin):
+        super().__init__()
+        self.plugin = plugin
+
+    def after_hooked_method(self, _param):
+        self.plugin._on_call_finished()
+
+
+class _NewMessagesObserver(NotificationCenterDelegate):
+    def __init__(self, plugin):
+        try:
+            super().__init__()
+        except Exception:
+            pass
+        self.plugin = plugin
+
+    def didReceivedNotification(self, notification_id, account, args):
+        if notification_id == getattr(NotificationCenter, "openedChatChanged", None):
+            run_on_ui_thread(self.plugin._refresh_chat_menu)
+            return
+        if notification_id != NotificationCenter.didReceiveNewMessages:
+            return
+        try:
+            messages = args[1]
+            self.plugin._debug("NC new messages: account=%s count=%s" % (account, messages.size()))
+            for index in range(messages.size()):
+                self.plugin._on_incoming_message_object(account, messages.get(index))
+        except Exception:
+            self.plugin._debug("NC error: " + traceback.format_exc().splitlines()[-1])
+            self.plugin.log("[telegram_jam] notification error: " + traceback.format_exc())
+
+
+class _JamPanelServer:
+    def __init__(self, plugin, port=0):
+        self.plugin = plugin
+        self.token = secrets.token_urlsafe(18)
+        self.requested_port = int(port or 0)
+        panel = self
+
+        class Handler(BaseHTTPRequestHandler):
+            protocol_version = "HTTP/1.1"
+
+            def log_message(self, _format, *_args):
+                pass
+
+            def do_GET(self):
+                try:
+                    parsed = urlparse(self.path)
+                    params = parse_qs(parsed.query)
+                    if params.get("token", [""])[0] != panel.token:
+                        panel._reply(self, 403, b"Forbidden", "text/plain; charset=utf-8")
+                        return
+                    if parsed.path == "/act":
+                        action = params.get("action", [""])[0]
+                        value = params.get("value", [""])[0]
+                        run_on_ui_thread(lambda: panel.plugin._panel_action(action, value))
+                        panel._reply(self, 200, b'{"ok":true}', "application/json; charset=utf-8")
+                        return
+                    if parsed.path == "/api":
+                        body = json.dumps(panel.plugin._panel_state(), ensure_ascii=False).encode("utf-8")
+                        panel._reply(self, 200, body, "application/json; charset=utf-8")
+                        return
+                    body = panel.plugin._panel_html(panel.token).encode("utf-8")
+                    panel._reply(self, 200, body, "text/html; charset=utf-8")
+                except Exception:
+                    panel.plugin._debug_exception("Panel HTTP error")
+                    try:
+                        panel._reply(self, 500, b"Panel error", "text/plain; charset=utf-8")
+                    except Exception:
+                        pass
+
+        try:
+            self.http = ThreadingHTTPServer(("127.0.0.1", self.requested_port), Handler)
+        except OSError:
+            if not self.requested_port:
+                raise
+            # Requested port is busy: fall back to any free one.
+            self.http = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.port = self.http.server_address[1]
+        self.thread = threading.Thread(target=self.http.serve_forever, name="telegram-jam-panel", daemon=True)
+        self.thread.start()
+
+    def _reply(self, handler, status, body, content_type):
+        handler.send_response(status)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Cache-Control", "no-store")
+        handler.send_header("Connection", "close")
+        handler.end_headers()
+        handler.wfile.write(body)
+
+    @property
+    def url(self):
+        return "http://127.0.0.1:%s/?token=%s" % (self.port, self.token)
+
+    def close(self):
+        try:
+            self.http.shutdown()
+            self.http.server_close()
+        except Exception:
+            pass
+
+
+class TelegramJamPlugin(BasePlugin):
+    def on_plugin_load(self):
+        # This must be initialized first so every later startup error is visible
+        # from the settings page instead of disappearing into unavailable logs.
+        self._debug_entries = []
+        self._socket = None
+        self._socket_lock = threading.Lock()
+        self._room = None
+        self._pending = None
+        self._connecting = False
+        self._server_offset_ms = 0
+        self._remote_action_until = 0
+        self._last_playback_event_at = 0
+        self._sync_generation = 0
+        self._playback_hooks = []
+        self._player_close_hooks = []
+        self._call_hook = None
+        self._menu_item_id = None
+        self._panel_menu_item_id = None
+        self._call_end_in_progress = False
+        self._disconnecting = False
+        self._pending_track_message = None
+        self._forward_attempted = False
+        self._track_ready_retries = 0
+        self._missing_track_id = None
+        self._awaiting_track = None
+        self._received_tracks = {}
+        self._message_observers = {}
+        self._temporary_document_ids = {}
+        self._cleanup_texts = set()
+        self._external_track_document_id = ""
+        self._external_track_generation = 0
+        self._external_track_pending = None
+        self._forward_started_at = 0
+        self._panel = None
+        self._server_info = {}
+        self._update_prompted = set()
+        self._debug("Plugin load started")
+        self._safe_setup("send hook", self.add_on_send_message_hook)
+        self._safe_setup("update hook", lambda: self.add_hook("TL_updateNewMessage"))
+        self._safe_setup("playback hooks", self._install_playback_hooks)
+        self._safe_setup("player close hooks", self._install_player_close_hooks)
+        self._safe_setup("call hook", self._install_call_hook)
+        self._safe_setup("chat menu", self._install_chat_menu)
+        self._debug("Plugin load finished")
+
+    def on_plugin_unload(self):
+        self._disconnect()
+        room = self._room
+        self._room = None
+        self._pending = None
+        self._sync_generation += 1
+        for hook in self._playback_hooks:
+            try:
+                self.unhook_method(hook)
+            except Exception:
+                pass
+        self._playback_hooks = []
+        for hook in self._player_close_hooks:
+            try:
+                self.unhook_method(hook)
+            except Exception:
+                pass
+        self._player_close_hooks = []
+        try:
+            if self._call_hook:
+                self.unhook_method(self._call_hook)
+        except Exception:
+            pass
+        self._call_hook = None
+        try:
+            if self._menu_item_id:
+                self.remove_menu_item(self._menu_item_id)
+        except Exception:
+            pass
+        self._menu_item_id = None
+        try:
+            if self._panel_menu_item_id:
+                self.remove_menu_item(self._panel_menu_item_id)
+        except Exception:
+            pass
+        self._panel_menu_item_id = None
+        for account, observer_data in self._message_observers.items():
+            try:
+                notification_center, observer = observer_data
+                notification_center.removeObserver(
+                    observer,
+                    NotificationCenter.didReceiveNewMessages,
+                )
+                opened_id = getattr(NotificationCenter, "openedChatChanged", None)
+                if opened_id is not None:
+                    notification_center.removeObserver(observer, opened_id)
+            except Exception:
+                pass
+        self._message_observers = {}
+        if getattr(self, "_panel", None):
+            self._panel.close()
+        self._panel = None
+
+    def create_settings(self) -> List[Any]:
+        return [
+            Header(text="Telegram Jam"),
+            Input(
+                key="server_url",
+                text=_t("Адрес Jam-сервера"),
+                default=DEFAULT_SERVER_URL,
+                subtext=_t("По умолчанию: wss://jam.ltyt.me/jam. Гость подключится к серверу хоста автоматически."),
+                icon="msg_link",
+            ),
+            Selector(
+                key="control_mode",
+                text=_t("Управление по умолчанию"),
+                default=0,
+                items=[_t("Только хост"), _t("Хост и гость")],
+                icon="msg_settings",
+                on_change=self._on_control_mode_change,
+            ),
+            Switch(
+                key="delete_temp_tracks",
+                text=_t("Удалять копии треков после Jam"),
+                subtext=_t("Когда Jam закончится, удалить треки и служебные сообщения, которые плагин отправил в чат."),
+                default=True,
+                icon="msg_delete",
+            ),
+            Divider(),
+            Text(
+                text=_t("Панель Jam"),
+                subtext=_t("Плеер и управление комнатой."),
+                icon="msg_music",
+                on_click=lambda view: self._open_panel(),
+            ),
+            Input(
+                key="panel_port",
+                text=_t("Порт панели"),
+                default="",
+                subtext=_t("Пусто — любой свободный. Например: 8765."),
+                icon="msg_link",
+            ),
+            Text(
+                text=_t("Команды"),
+                subtext=_t("Список команд и префикс."),
+                icon="msg_help",
+                create_sub_fragment=self._create_commands_page,
+            ),
+            Text(
+                text=_t("Диагностика"),
+                subtext=_t("Журнал работы для отправки разработчику."),
+                icon="msg_info",
+                create_sub_fragment=self._create_diagnostics_page,
+            ),
+            Divider(),
+            Text(
+                text=_t("О сервере"),
+                icon="msg_info",
+                on_click=lambda view: self._show_about_server(),
+            ),
+        ]
+
+    def _show_about_server(self):
+        def show():
+            try:
+                fragment = get_last_fragment()
+                activity = fragment.getParentActivity() if fragment else None
+                if activity is None:
+                    return
+                builder = AlertDialogBuilder(activity)
+                builder.set_title(_t("О сервере"))
+                builder.set_message(ABOUT_SERVER_TEXT if _lang() == "ru" else ABOUT_SERVER_TEXT_EN)
+                builder.set_positive_button(_t("Закрыть"), lambda bld, _which: bld.dismiss())
+                builder.set_neutral_button("GitHub", lambda bld, _which: self._open_github(bld))
+                builder.show()
+            except Exception:
+                self._debug_exception("About dialog error")
+
+        run_on_ui_thread(show)
+
+    def _open_github(self, builder=None):
+        try:
+            if builder is not None:
+                builder.dismiss()
+        except Exception:
+            pass
+        if not GITHUB_URL:
+            self._bulletin("info", _t("Репозиторий скоро появится."))
+            return
+        try:
+            fragment = get_last_fragment()
+            context = fragment.getParentActivity() if fragment else ApplicationLoader.applicationContext
+            Browser.openUrl(context, GITHUB_URL)
+        except Exception:
+            self._debug_exception("GitHub open error")
+
+    def _create_commands_page(self) -> List[Any]:
+        prefix = self._prefix()
+        return [
+            Header(text=_t("Команды Jam")),
+            Input(
+                key="prefix",
+                text=_t("Префикс команд"),
+                default=DEFAULT_PREFIX,
+                icon="msg_edit",
+            ),
+            Text(text="%sstartjam" % prefix, subtext=_t("Создать Jam и отправить приглашение. То же, что пункт меню чата."), icon="msg_add"),
+            Text(text=_t("%sacceptjam <код>") % prefix, subtext=_t("Принять приглашение. Сервер берётся из кода."), icon="msg_done"),
+            Text(text="%sdeclinejam" % prefix, subtext=_t("Отклонить приглашение."), icon="msg_delete"),
+            Text(text="%sjamstatus" % prefix, subtext=_t("Показать роль и режим управления."), icon="msg_info"),
+            Text(text="%sleavejam" % prefix, subtext=_t("Выйти из Jam. Хост передаёт управление гостю."), icon="msg_close"),
+            Text(text="%sendjam" % prefix, subtext=_t("Завершить Jam для всех. Только хост."), icon="msg_stop"),
+            Divider(),
+            Text(
+                text=_t("Чтобы поставить трек, просто включи его: в Jam-чате, в профиле или в другом чате."),
+                icon="msg_music",
+            ),
+        ]
+
+    def _create_diagnostics_page(self) -> List[Any]:
+        entries = list(reversed(getattr(self, "_debug_entries", [])[-20:]))
+        items = [
+            Header(text=_t("Диагностика Jam")),
+            Text(
+                text=_t("Скопировать журнал"),
+                subtext=_t("Скопировать последние события для отправки разработчику."),
+                icon="msg_copy",
+                on_click=lambda view: self._copy_diagnostics(),
+            ),
+            Text(
+                text=_t("Очистить журнал"),
+                subtext=_t("Удалить локальные диагностические записи."),
+                icon="msg_delete",
+                red=True,
+                on_click=lambda view: self._clear_diagnostics(),
+            ),
+            Divider(),
+            Header(text=_t("Последние события")),
+        ]
+        if not entries:
+            items.append(Text(text=_t("Журнал пока пуст."), icon="msg_info"))
+            return items
+        for entry in entries:
+            items.append(Text(text=entry, icon="msg_info"))
+        return items
+
+    def on_send_message_hook(self, account: int, params: Any) -> HookResult:
+        text = getattr(params, "message", None)
+        if not isinstance(text, str) or not text.strip():
+            return HookResult()
+
+        parts = text.strip().split(None, 1)
+        command = parts[0].lower()
+        argument = parts[1].strip() if len(parts) > 1 else ""
+        prefix = self._prefix().lower()
+        commands = {
+            prefix + "startjam": self._start_jam,
+            prefix + "acceptjam": self._accept_jam,
+            prefix + "declinejam": self._decline_jam,
+            prefix + "endjam": self._end_jam,
+            prefix + "leavejam": self._leave_jam,
+            prefix + "jamstatus": self._jam_status,
+        }
+        handler = commands.get(command)
+        if handler is None:
+            return HookResult()
+
+        dialog_id = self._peer_dialog_id(params)
+        try:
+            self._debug("Command: %s dialog=%s account=%s" % (command, dialog_id, account))
+            handler(account, dialog_id, argument)
+        except Exception:
+            self._debug_exception("Command error")
+            self._bulletin("error", _t("Не удалось выполнить команду Jam."))
+        return HookResult(strategy=HookStrategy.CANCEL)
+
+    def on_update_hook(self, update_name: str, account: int, update: Any) -> HookResult:
+        if update_name != "TL_updateNewMessage":
+            return HookResult()
+        room = self._room
+        track = self._awaiting_track
+        if not room or room.get("role") != "guest" or not track:
+            return HookResult()
+        try:
+            message = getattr(update, "message", None)
+            if message is None or bool(getattr(message, "out", False)):
+                return HookResult()
+            if self._message_document_id(message) != str(track.get("document_id", "") or ""):
+                return HookResult()
+            message_object = MessageObject(account, message, True, True)
+            self._debug("Update matched track doc=%s msg=%s" % (track.get("document_id"), getattr(message, "id", "?")))
+            self._accept_received_track(message_object)
+        except Exception:
+            self._debug("Update error: " + traceback.format_exc().splitlines()[-1])
+            self.log("[telegram_jam] incoming track update error: " + traceback.format_exc())
+        return HookResult()
+
+    def _ensure_message_observer(self, account):
+        if account in self._message_observers:
+            return
+
+        def register():
+            if account in self._message_observers:
+                return
+            try:
+                try:
+                    account_instance = get_account_instance(account)
+                except TypeError:
+                    account_instance = get_account_instance()
+                notification_center = account_instance.getNotificationCenter()
+                observer = _NewMessagesObserver(self)
+                notification_center.addObserver(observer, NotificationCenter.didReceiveNewMessages)
+                opened_id = getattr(NotificationCenter, "openedChatChanged", None)
+                if opened_id is not None:
+                    notification_center.addObserver(observer, opened_id)
+                self._message_observers[account] = (notification_center, observer)
+                self._debug("NC observer registered: account=%s" % account)
+            except Exception:
+                self._debug_exception("NC observer setup error")
+
+        run_on_ui_thread(register)
+
+    def _on_incoming_message_object(self, account, message_object):
+        room = self._room
+        if not room:
+            return
+        try:
+            if int(account) != int(room["account"]):
+                return
+            if int(message_object.getDialogId()) != int(room["dialog_id"]):
+                return
+            document_id = self._document_id(message_object)
+            if bool(getattr(message_object.messageOwner, "out", False)):
+                pending = self._external_track_pending
+                if pending and document_id == pending.get("document_id") and int(message_object.getId()) > 0:
+                    self._debug("External track copy arrived in Jam chat: msg=%s" % message_object.getId())
+                    self._handle_external_copy_arrived(message_object)
+                return
+            track = self._awaiting_track
+            if not track or document_id != str(track.get("document_id", "") or ""):
+                return
+            self._debug("NC matched track doc=%s msg=%s" % (track.get("document_id"), message_object.getId()))
+            self._accept_received_track(message_object)
+        except Exception:
+            self._debug("NC incoming error: " + traceback.format_exc().splitlines()[-1])
+
+    def _accept_received_track(self, message_object):
+        track = self._awaiting_track
+        if not track:
+            return
+        self._received_tracks[track["id"]] = message_object
+        self._debug("Guest track ready: id=%s local_msg=%s" % (track["id"], message_object.getId()))
+        self._send_track_status(track, "ready")
+
+    def _start_jam(self, account, dialog_id, _argument):
+        if not self._is_private_dialog(dialog_id):
+            self._bulletin("error", _t("Jam можно создать только в личном чате."))
+            return
+        if self._room or self._connecting:
+            self._bulletin("error", _t("Сначала заверши или покинь текущий Jam."))
+            return
+        server_url = self._server_url()
+        if not server_url:
+            self._bulletin("error", _t("Укажи адрес Jam-сервера в настройках плагина."))
+            return
+
+        self._pending = {
+            "action": "create",
+            "account": account,
+            "dialog_id": dialog_id,
+            "server_url": server_url,
+        }
+        self._connect(server_url, {
+            "type": "create_room",
+                "client_version": __version__,
+                "protocol": PROTOCOL_VERSION,
+            "request_id": "create",
+            "control_mode": self._control_mode(),
+            "display_name": self._display_name(account)[:64],
+        })
+
+    def _accept_jam(self, account, dialog_id, argument):
+        if not self._is_private_dialog(dialog_id):
+            self._bulletin("error", _t("Jam можно принять только в личном чате."))
+            return
+        if self._room or self._connecting:
+            self._bulletin("error", _t("Сначала заверши или покинь текущий Jam."))
+            return
+        parts = argument.split()
+        if len(parts) != 1:
+            self._bulletin("error", _t("Скопируй команду принятия из приглашения."))
+            return
+        decoded = self._decode_invite(parts[0])
+        if decoded:
+            # The host's server comes from the code; local settings stay unchanged.
+            server_url, secret = decoded
+        else:
+            server_url, secret = self._server_url(), parts[0]
+            if not server_url:
+                self._bulletin("error", _t("Код приглашения повреждён. Скопируй его целиком."))
+                return
+
+        self._pending = {
+            "action": "join",
+            "account": account,
+            "dialog_id": dialog_id,
+            "server_url": server_url,
+        }
+        self._connect(
+            server_url,
+            {
+                "type": "join_room",
+                "client_version": __version__,
+                "protocol": PROTOCOL_VERSION,
+                "request_id": "join",
+                "invite_code": secret,
+                "display_name": self._display_name(account)[:64],
+            },
+        )
+
+    def _decline_jam(self, account, dialog_id, _argument):
+        if not self._is_private_dialog(dialog_id):
+            self._bulletin("error", _t("Команда доступна только в личном чате."))
+            return
+        self._send_text(account, dialog_id, _t("🎵 Приглашение в Jam отклонено."))
+        self._bulletin("info", _t("Приглашение отклонено."))
+
+    def _end_jam(self, _account, dialog_id, _argument):
+        if not self._room:
+            self._bulletin("info", _t("Активного Jam нет."))
+            return
+        if dialog_id != self._room["dialog_id"]:
+            self._bulletin("error", _t("Завершай Jam в том же личном чате, где он был создан."))
+            return
+        if self._room["role"] != "leader":
+            self._bulletin("error", _t("Завершить Jam может только его создатель."))
+            return
+        if not self._send_ws({
+            "type": "end_room",
+            "room_id": self._room["room_id"],
+            "leader_token": self._room["token"],
+        }):
+            self._reset_room(_t("Jam завершён."))
+
+    def _leave_jam(self, _account, dialog_id, _argument):
+        room = self._room
+        if not room:
+            self._bulletin("info", _t("Активного Jam нет."))
+            return
+        if dialog_id != room["dialog_id"]:
+            self._bulletin("error", _t("Выйти можно из Jam текущего личного чата."))
+            return
+        participants = room.get("participants") or {}
+        other_online = bool(participants.get("guest_connected" if room.get("role") == "leader" else "leader_connected"))
+        self._send_ws({"type": "leave_room", "room_id": room["room_id"]})
+        if room.get("role") == "leader" and other_online:
+            text = _t("Ты вышел из Jam. Хостом стал собеседник.")
+        else:
+            text = _t("Ты вышел из Jam.")
+        # Copies are removed only when the Jam ends. If the other participant
+        # stays, the Jam goes on and they clean up when it ends.
+        self._reset_room(text, cleanup=not other_online)
+
+    def _jam_status(self, _account, _dialog_id, _argument):
+        if not self._room:
+            self._bulletin("info", _t("Активного Jam нет."))
+            return
+        role = _t("хост") if self._room["role"] == "leader" else _t("гость")
+        mode = _t("хост и гость") if self._room.get("control_mode") == "both" else _t("только хост")
+        server = self._server_label(self._room.get("server_url", ""))
+        self._bulletin("info", _t("Jam подключён (%s). Роль: %s. Управление: %s.") % (server, role, mode))
+
+    def _on_control_mode_change(self, index):
+        self._set_control_mode("both" if int(index) == 1 else "leader")
+
+    def _set_control_mode(self, mode, persist=False):
+        room = self._room
+        if not room or room.get("role") != "leader" or room.get("control_mode") == mode:
+            return
+        room["control_mode"] = mode
+        self._send_ws({
+            "type": "set_control_mode",
+            "room_id": room["room_id"],
+            "leader_token": room["token"],
+            "control_mode": mode,
+        })
+        if persist:
+            try:
+                self.set_setting("control_mode", 1 if mode == "both" else 0)
+            except Exception:
+                pass
+
+    def _connect(self, server_url, initial_message):
+        self._disconnecting = False
+        self._connecting = True
+
+        def worker():
+            socket = None
+            try:
+                from websocket import create_connection
+
+                socket = create_connection(server_url, timeout=10)
+                socket.settimeout(None)
+                with self._socket_lock:
+                    self._socket = socket
+                socket.send(json.dumps(initial_message, separators=(",", ":")))
+                self._debug("WS connected; sent %s" % initial_message.get("type"))
+                self._start_keepalive(socket)
+                while True:
+                    raw = socket.recv()
+                    if not raw:
+                        break
+                    self._handle_server_message(json.loads(raw))
+            except Exception:
+                self._debug("WS error: " + traceback.format_exc().splitlines()[-1])
+                self.log("[telegram_jam] websocket error: " + traceback.format_exc())
+                if self._disconnecting:
+                    pass
+                elif self._room:
+                    self._reset_room(_t("Соединение с Jam-сервером потеряно. Комната закрыта."), error=True)
+                else:
+                    self._bulletin("error", _t("Не удалось подключиться к Jam-серверу."))
+            finally:
+                with self._socket_lock:
+                    if self._socket is socket:
+                        self._socket = None
+                self._connecting = False
+                if not self._room:
+                    self._pending = None
+                try:
+                    if socket:
+                        socket.close()
+                except Exception:
+                    pass
+
+        thread = threading.Thread(target=worker, name="telegram-jam", daemon=True)
+        thread.start()
+
+    def _start_keepalive(self, socket):
+        # Reverse proxies drop idle WebSocket connections (nginx after 60 s by
+        # default), which used to end the Jam in the middle of a track.
+        def loop():
+            while True:
+                time.sleep(PING_INTERVAL_S)
+                with self._socket_lock:
+                    if self._socket is not socket:
+                        return
+                try:
+                    socket.send('{"type":"ping"}')
+                except Exception:
+                    return
+
+        threading.Thread(target=loop, name="telegram-jam-ping", daemon=True).start()
+
+    def _handle_server_message(self, message):
+        message_type = message.get("type") if isinstance(message, dict) else None
+        self._debug("WS received: %s" % message_type)
+        if message_type in ("hello", "pong"):
+            self._update_server_clock(message)
+            if message_type == "hello":
+                self._handle_server_versions(message)
+            return
+        if message_type == "track_offered":
+            return
+        if message_type == "peer_presence":
+            if self._room and message.get("room_id") == self._room["room_id"]:
+                self._room["participants"] = {
+                    "leader": message.get("leader_name"),
+                    "guest": message.get("guest_name"),
+                    "leader_connected": bool(message.get("leader_connected")),
+                    "guest_connected": bool(message.get("guest_connected")),
+                }
+            return
+        if message_type == "error" and message.get("code") == "client_outdated":
+            self._pending = None
+            self._show_update_dialog(message, required=True)
+            return
+        if message_type == "error":
+            self._pending = None
+            self._bulletin("error", _t("Jam-сервер: %s") % message.get("code", _t("неизвестная ошибка")))
+            return
+        if message_type == "room_created":
+            self._handle_room_created(message)
+            return
+        if message_type == "room_joined":
+            self._handle_room_joined(message)
+            return
+        if message_type == "role_changed":
+            self._handle_role_changed(message)
+            return
+        if message_type == "room_state":
+            self._handle_room_state(message)
+            return
+        if message_type == "track_offer":
+            self._handle_track_offer(message)
+            return
+        if message_type == "track_status":
+            self._handle_track_status(message)
+            return
+        if message_type == "track_cancelled":
+            self._handle_track_cancelled(message)
+            return
+        if message_type == "control_mode":
+            self._handle_control_mode(message)
+            return
+        if message_type == "room_ended":
+            room = self._room
+            self._room = None
+            self._pending = None
+            self._call_end_in_progress = False
+            self._awaiting_track = None
+            self._received_tracks = {}
+            self._external_track_pending = None
+            self._cleanup_temporary_tracks(room)
+            self._disconnect()
+            self._refresh_chat_menu()
+            if room and room.get("role") == "leader" and message.get("reason") == "ended_by_participant":
+                self._send_text(room["account"], room["dialog_id"], _t("🎵 Звонок завершён, Jam остановлен."))
+            self._bulletin("info", _t("Jam завершён."))
+            return
+        if message_type == "room_left":
+            if message.get("reason") == "leader_transferred":
+                self._reset_room(_t("Ты вышел из Jam. Хостом стал собеседник."), cleanup=False)
+                return
+            self._reset_room(_t("Ты вышел из Jam."), cleanup=False)
+
+    def _handle_server_versions(self, message):
+        info = {
+            "server_version": str(message.get("server_version") or "?"),
+            "protocol": int(message.get("protocol") or 1),
+            "min_plugin_version": str(message.get("min_plugin_version") or "0"),
+            "latest_plugin_version": str(message.get("latest_plugin_version") or "0"),
+            "update_url": str(message.get("update_url") or ""),
+        }
+        self._server_info = info
+        if info["protocol"] < MIN_SERVER_PROTOCOL:
+            self._bulletin("error", _t("Сервер устарел для этой версии плагина. Попроси владельца сервера обновить его."))
+            return
+        latest = info["latest_plugin_version"]
+        if _version_tuple(__version__) < _version_tuple(info["min_plugin_version"]):
+            return  # the server refuses this version; the required-update dialog follows
+        if _version_tuple(latest) > _version_tuple(__version__) and latest not in self._update_prompted:
+            self._update_prompted.add(latest)
+            self._show_update_dialog(message, required=False)
+
+    def _show_update_dialog(self, message, required):
+        server_version = str(message.get("server_version") or "?")
+        min_version = str(message.get("min_plugin_version") or "?")
+        latest = str(message.get("latest_plugin_version") or min_version)
+        update_url = self._resolve_update_url(str(message.get("update_url") or ""))
+        headline = (
+            _t("Плагин устарел для этого Jam-сервера. Обнови его, чтобы создавать и принимать Jam.")
+            if required else _t("Вышла новая версия плагина.")
+        )
+        details = _t("Версия плагина: %s\nВерсия сервера: %s\nНужен плагин: %s или новее\nПоследний плагин: %s") % (
+            __version__, server_version, min_version, latest,
+        )
+        self._debug("Update dialog: required=%s server=%s latest=%s" % (required, server_version, latest))
+
+        def show():
+            try:
+                fragment = get_last_fragment()
+                activity = fragment.getParentActivity() if fragment else None
+                if activity is None:
+                    self._bulletin("error" if required else "info", headline)
+                    return
+                builder = AlertDialogBuilder(activity)
+                builder.set_title(_t("Обновление Jam"))
+                builder.set_message(headline + "\n\n" + details)
+                builder.set_positive_button(_t("Обновить"), lambda bld, _which: self._open_update(bld, update_url))
+                builder.set_negative_button(_t("Закрыть"), lambda bld, _which: bld.dismiss())
+                builder.show()
+            except Exception:
+                self._debug_exception("Update dialog error")
+
+        run_on_ui_thread(show)
+
+    def _resolve_update_url(self, update_url):
+        # The server announces where updates are published (by default the
+        # plugin's Telegram channel); t.me links open right inside Telegram.
+        if update_url.startswith("https://") or update_url.startswith("http://") or update_url.startswith("tg://"):
+            return update_url
+        return CHANNEL_URL
+
+    def _open_update(self, builder, update_url):
+        try:
+            builder.dismiss()
+        except Exception:
+            pass
+        if not update_url:
+            self._bulletin("info", _t("Ссылка на обновление не указана на сервере."))
+            return
+        try:
+            fragment = get_last_fragment()
+            context = fragment.getParentActivity() if fragment else ApplicationLoader.applicationContext
+            Browser.openUrl(context, update_url)
+        except Exception:
+            self._debug_exception("Update open error")
+
+    def _handle_role_changed(self, message):
+        if not self._room or message.get("room_id") != self._room["room_id"]:
+            return
+        self._room["role"] = message.get("role", "leader")
+        self._room["token"] = message.get("leader_token", self._room.get("token"))
+        self._room["participants"] = message.get("participants", self._room.get("participants", {}))
+        self._debug("Role changed to %s" % self._room["role"])
+        self._refresh_chat_menu()
+        self._bulletin("info", _t("Хост вышел. Теперь ты хост Jam.") if self._room["role"] == "leader" else _t("Теперь ты гость Jam."))
+
+    def _handle_room_created(self, message):
+        pending = self._pending
+        if not pending or pending.get("action") != "create":
+            return
+        self._room = {
+            "room_id": message["room_id"],
+            "token": message["leader_token"],
+            "role": "leader",
+            "started_at": int(time.time()),
+            "account": pending["account"],
+            "dialog_id": pending["dialog_id"],
+            "server_url": pending["server_url"],
+            "revision": 0,
+            "control_mode": message.get("control_mode", "leader"),
+            "participants": message.get("participants", {}),
+        }
+        self._ensure_message_observer(pending["account"])
+        self._call_end_in_progress = False
+        self._debug("Room created: %s" % message["room_id"])
+        self._pending = None
+        accept_command = "%sacceptjam %s" % (
+            self._prefix(),
+            self._encode_invite(pending["server_url"], message["invite_code"]),
+        )
+        name = self._display_name(pending["account"])
+        text = _t("🎵 %s пригласил тебя в Jam.\n\nПринять:") % (
+            name,
+        )
+        self._send_text(
+            pending["account"],
+            pending["dialog_id"],
+            text + "\n" + accept_command,
+            self._code_entity(text + "\n", accept_command),
+            cleanup_after_jam=True,
+        )
+        self._bulletin("success", _t("Jam создан. Приглашение отправлено."))
+        self._refresh_chat_menu()
+        self._start_sync_loop()
+
+    def _handle_room_joined(self, message):
+        pending = self._pending
+        if not pending or pending.get("action") != "join":
+            return
+        self._room = {
+            "room_id": message["room_id"],
+            "token": message["guest_token"],
+            "role": "guest",
+            "started_at": int(time.time()),
+            "account": pending["account"],
+            "dialog_id": pending["dialog_id"],
+            "server_url": pending["server_url"],
+            "revision": 0,
+            "control_mode": message.get("control_mode", "leader"),
+            "participants": message.get("participants", {}),
+        }
+        self._ensure_message_observer(pending["account"])
+        self._call_end_in_progress = False
+        self._debug("Room joined: %s" % message["room_id"])
+        self._pending = None
+        self._send_text(pending["account"], pending["dialog_id"], _t("🎵 Я присоединился к Jam."), cleanup_after_jam=True)
+        self._bulletin("success", _t("Ты присоединился к Jam."))
+        self._refresh_chat_menu()
+        if message.get("state"):
+            self._handle_room_state({
+                "type": "room_state",
+                "room_id": message["room_id"],
+                "state": message["state"],
+                "server_time_ms": self._server_now_ms(),
+            })
+
+    def _handle_room_state(self, message):
+        if not self._room or message.get("room_id") != self._room["room_id"]:
+            return
+        self._update_server_clock(message)
+        state = message.get("state")
+        if not isinstance(state, dict) or not isinstance(state.get("track"), dict):
+            return
+        revision = state.get("revision", 0)
+        if revision <= self._room.get("revision", 0):
+            return
+        self._room["revision"] = revision
+        self._room["state"] = state
+        self._room["control_mode"] = message.get("control_mode", self._room.get("control_mode", "leader"))
+        self._room["participants"] = message.get("participants", self._room.get("participants", {}))
+        self._play_synced_state(state)
+
+    def _handle_track_cancelled(self, message):
+        room = self._room
+        if not room or message.get("room_id") != room["room_id"]:
+            return
+        pending = room.get("pending_track")
+        if pending and pending.get("id") == message.get("track_id"):
+            room["pending_track"] = None
+            room["pending_track_owner"] = None
+            self._pending_track_message = None
+            self._forward_attempted = False
+            self._bulletin("info", _t("Хост забрал управление, трек не добавлен."))
+        awaiting = self._awaiting_track
+        if awaiting and awaiting.get("id") == message.get("track_id"):
+            self._awaiting_track = None
+            self._missing_track_id = None
+
+    def _handle_control_mode(self, message):
+        if not self._room or message.get("room_id") != self._room["room_id"]:
+            return
+        mode = message.get("control_mode")
+        if mode in ("leader", "both"):
+            self._room["control_mode"] = mode
+            self._bulletin("info", _t("Управление Jam: %s.") % (_t("хост и гость") if mode == "both" else _t("только хост")))
+
+    def _handle_track_offer(self, message):
+        if not self._room:
+            return
+        if message.get("room_id") != self._room["room_id"]:
+            return
+        track = message.get("track")
+        if not isinstance(track, dict):
+            return
+        if track.get("temporary"):
+            document_id = str(track.get("document_id", "") or "")
+            if document_id:
+                self._temporary_document_ids[document_id] = {
+                "account": int(self._room["account"]),
+                "dialog_id": int(self._room["dialog_id"]),
+                "original_id": int(track.get("message_id", 0) or 0),
+                "started_at": int(time.time()) - 5,
+                }
+        self._awaiting_track = track
+        self._debug("Track offer: id=%s doc=%s msg=%s" % (track.get("id"), track.get("document_id"), track.get("message_id")))
+        try:
+            message_object = self._find_message(
+                self._room["account"],
+                int(self._room["dialog_id"]),
+                int(track["message_id"]),
+                str(track.get("document_id", "") or ""),
+            )
+            status = "ready" if message_object and self._is_audio_track(message_object) else "missing"
+        except Exception:
+            status = "missing"
+        if status == "ready":
+            self._received_tracks[track["id"]] = message_object
+            self._send_track_status(track, "ready")
+        else:
+            # Reply to every offer. The leader retries while Telegram indexes
+            # the forwarded message on this client.
+            self._send_track_status(track, "missing")
+            self._debug("Track missing in cache/database: id=%s" % track.get("id"))
+            if self._missing_track_id != track.get("id"):
+                self._missing_track_id = track.get("id")
+                self._bulletin("info", _t("Трек загружается. Ожидаю его появления в чате."))
+
+    def _send_track_status(self, track, status):
+        if not self._room:
+            return
+        if status == "ready":
+            self._awaiting_track = None
+            self._missing_track_id = None
+        self._send_ws({
+            "type": "track_status",
+            "room_id": self._room["room_id"],
+            "track_id": track.get("id"),
+            "status": status,
+        })
+
+    def _handle_track_status(self, message):
+        if not self._room or self._room.get("pending_track_owner") != self._room.get("role"):
+            return
+        pending_track = self._room.get("pending_track")
+        if not pending_track or message.get("track_id") != pending_track.get("id"):
+            return
+        self._debug("Leader got track status: %s" % message.get("status"))
+        if message.get("status") != "ready":
+            if not self._forward_attempted:
+                if self._pending_track_message is None or not self._forward_track_to_guest():
+                    self._room["pending_track"] = None
+                    self._bulletin("error", _t("Не удалось передать трек второму клиенту."))
+                    return
+                self._forward_attempted = True
+                self._track_ready_retries = 0
+                self._bulletin("info", _t("Отправляю трек собеседнику, жду загрузки."))
+                self._schedule_track_ready_retry()
+                return
+            if self._track_ready_retries >= TRACK_READY_MAX_RETRIES:
+                self._room["pending_track"] = None
+                self._bulletin("error", _t("Не удалось передать трек второму клиенту."))
+                return
+            return
+        self._room["pending_track"] = None
+        self._room["pending_track_owner"] = None
+        self._pending_track_message = None
+        self._forward_attempted = False
+        self._track_ready_retries = 0
+        state = {
+            "track": pending_track,
+            "playing": True,
+            "position_ms": 0,
+            "start_at_server_ms": self._server_now_ms() + 2000,
+            "revision": self._room.get("revision", 0) + 1,
+        }
+        self._send_room_state(state)
+        self._play_synced_state(state)
+
+    def _play_synced_state(self, state):
+        track = state["track"]
+        try:
+            message_id = int(track["message_id"])
+        except Exception:
+            self._bulletin("error", _t("Jam получил некорректные данные трека."))
+            return
+        message_object = self._received_tracks.get(track.get("id"))
+        if message_object is None:
+            message_object = self._find_message(
+                self._room["account"],
+                int(self._room["dialog_id"]),
+                message_id,
+            str(track.get("document_id", "") or ""),
+            )
+        if message_object is None:
+            self._bulletin("error", _t("Не нашёл аудиосообщение. Открой чат и дождись загрузки трека."))
+            return
+
+        duration_ms = int(track.get("duration_ms", 0) or 0)
+        delay = max(0, self._local_start_time(state) - self._local_now_ms())
+
+        def start():
+            try:
+                position_ms = self._state_position(state, duration_ms)
+                self._remote_action_until = self._local_now_ms() + 2500
+                controller = MediaController.getInstance()
+                current = controller.getPlayingMessageObject()
+                desired_playing = bool(state.get("playing"))
+                if self._matches_track(current, track):
+                    actual_position_ms = self._message_position(current, duration_ms)
+                    is_playing = not controller.isMessagePaused()
+                    if is_playing == desired_playing and abs(actual_position_ms - position_ms) <= 350:
+                        return
+                    # Same track is already loaded: adjust it instead of restarting.
+                    if desired_playing and not is_playing:
+                        controller.playMessage(current)
+                    if duration_ms > 0 and abs(actual_position_ms - position_ms) > 350:
+                        controller.seekToProgress(current, float(position_ms) / float(duration_ms))
+                    if not desired_playing and is_playing:
+                        controller.pauseMessage(current)
+                    return
+                controller.playMessage(message_object)
+                if duration_ms > 0:
+                    controller.seekToProgress(message_object, float(position_ms) / float(duration_ms))
+                if not desired_playing:
+                    controller.pauseMessage(message_object)
+            except Exception:
+                self.log("[telegram_jam] player error: " + traceback.format_exc())
+                self._bulletin("error", _t("Не удалось запустить Telegram-плеер."))
+
+        run_on_ui_thread(start, delay)
+
+    def _install_playback_hooks(self):
+        controller_class = find_class("org.telegram.messenger.MediaController")
+        if controller_class is None:
+            return
+        for method_name, event_type in (
+            ("playMessage", "play"),
+            ("pauseMessage", "pause"),
+            ("seekToProgress", "seek"),
+        ):
+            try:
+                hooks = self.hook_all_methods(
+                    controller_class,
+                    method_name,
+                    _PlaybackHook(self, event_type),
+                )
+                if hooks:
+                    self._playback_hooks.extend(hooks)
+            except Exception:
+                self.log("[telegram_jam] cannot hook %s: %s" % (method_name, traceback.format_exc()))
+
+    def _install_player_close_hooks(self):
+        controller_class = find_class("org.telegram.messenger.MediaController")
+        if controller_class is None:
+            return
+        for method_name in ("cleanupPlayer", "stopAudio"):
+            try:
+                hooks = self.hook_all_methods(controller_class, method_name, _PlayerCloseHook(self))
+                if hooks:
+                    self._player_close_hooks.extend(hooks)
+            except Exception:
+                self._debug("Cannot hook player close %s: %s" % (method_name, traceback.format_exc().splitlines()[-1]))
+
+    def _on_player_closed(self):
+        room = self._room
+        if not room or not room.get("state"):
+            return
+        if room.get("role") != "leader" and room.get("control_mode") != "both":
+            return
+        track = room["state"].get("track")
+        if not track:
+            return
+        self._debug("Player close detected; sending pause")
+        self._send_room_state({
+            "track": track,
+            "playing": False,
+            "position_ms": int(room["state"].get("position_ms", 0) or 0),
+            "start_at_server_ms": self._server_now_ms(),
+            "revision": room.get("revision", 0) + 1,
+        })
+
+    def _on_playback_event(self, event_type, param):
+        now = self._local_now_ms()
+        if now < self._remote_action_until or now - self._last_playback_event_at < 200:
+            return
+        self._last_playback_event_at = now
+        room = self._room
+        if not room:
+            return
+        if room.get("role") != "leader" and room.get("control_mode") != "both":
+            # Guest pause remains local. If the guest starts/seeks again, restore
+            # the latest leader state instead of letting the room desynchronize.
+            if event_type != "pause" and room.get("state"):
+                run_on_ui_thread(lambda: self._play_synced_state(room["state"]), 120)
+            return
+        try:
+            message_object = param.args[0]
+            if event_type == "play" and self._is_audio_track(message_object):
+                if not self._is_in_jam_chat(message_object):
+                    self._remote_action_until = now + 1500
+                    MediaController.getInstance().pauseMessage(message_object)
+                    self._forward_external_track_into_jam(message_object)
+                    return
+                current_track = room.get("state", {}).get("track")
+                pending_track = room.get("pending_track")
+                if (
+                    (not current_track or not self._matches_track(message_object, current_track))
+                    and (not pending_track or not self._matches_track(message_object, pending_track))
+                ):
+                    self._remote_action_until = now + 1500
+                    MediaController.getInstance().pauseMessage(message_object)
+                    self._queue_track(room["account"], room["dialog_id"], message_object)
+                    return
+
+            if not room.get("state"):
+                return
+            track = room["state"]["track"]
+            if not self._matches_track(message_object, track):
+                return
+            duration_ms = int(track.get("duration_ms", 0) or 0)
+            position_ms = self._message_position(message_object, duration_ms)
+            controller = MediaController.getInstance()
+            playing = event_type != "pause" and not controller.isMessagePaused()
+            lead_ms = 600 if playing else 0
+            if playing:
+                position_ms += lead_ms
+            room["revision"] = room.get("revision", 0) + 1
+            self._send_room_state({
+                "track": track,
+                "playing": playing,
+                "position_ms": position_ms,
+                "start_at_server_ms": self._server_now_ms() + lead_ms,
+                "revision": room["revision"],
+            })
+        except Exception:
+            self.log("[telegram_jam] local playback state error: " + traceback.format_exc())
+
+    def _send_room_state(self, state):
+        if not self._room or (self._room.get("role") != "leader" and self._room.get("control_mode") != "both"):
+            return
+        self._room["state"] = state
+        self._room["revision"] = state["revision"]
+        payload = {
+            "type": "set_state",
+            "room_id": self._room["room_id"],
+            "state": state,
+        }
+        if self._room.get("role") == "leader":
+            payload["leader_token"] = self._room["token"]
+        self._send_ws(payload)
+
+    def _start_sync_loop(self):
+        self._sync_generation += 1
+        generation = self._sync_generation
+        run_on_ui_thread(lambda: self._sync_tick(generation), 15000)
+
+    def _sync_tick(self, generation):
+        if generation != self._sync_generation:
+            return
+        room = self._room
+        if room and room.get("role") == "leader" and room.get("state"):
+            try:
+                controller = MediaController.getInstance()
+                message_object = controller.getPlayingMessageObject()
+                track = room["state"]["track"]
+                if self._matches_track(message_object, track):
+                    duration_ms = int(track.get("duration_ms", 0) or 0)
+                    position_ms = self._message_position(message_object, duration_ms)
+                    playing = not controller.isMessagePaused()
+                    lead_ms = 600 if playing else 0
+                    room["revision"] = room.get("revision", 0) + 1
+                    self._send_room_state({
+                        "track": track,
+                        "playing": playing,
+                        "position_ms": position_ms + lead_ms,
+                        "start_at_server_ms": self._server_now_ms() + lead_ms,
+                        "revision": room["revision"],
+                    })
+            except Exception:
+                self.log("[telegram_jam] sync tick error: " + traceback.format_exc())
+        run_on_ui_thread(lambda: self._sync_tick(generation), 15000)
+
+    def _matches_track(self, message_object, track):
+        if message_object is None:
+            return False
+        try:
+            if int(message_object.getId()) == int(track["message_id"]):
+                return True
+            document_id = str(track.get("document_id", "") or "")
+            return bool(document_id) and self._document_id(message_object) == document_id
+        except Exception:
+            return False
+
+    def _message_position(self, message_object, duration_ms):
+        if duration_ms <= 0:
+            return 0
+        progress = max(0.0, min(1.0, float(getattr(message_object, "audioProgress", 0.0))))
+        return int(duration_ms * progress)
+
+    def _state_position(self, state, duration_ms):
+        position_ms = max(0, int(state.get("position_ms", 0) or 0))
+        if state.get("playing"):
+            position_ms += max(0, self._server_now_ms() - int(state.get("start_at_server_ms", 0) or 0))
+        if duration_ms:
+            return min(position_ms, duration_ms)
+        return position_ms
+
+    def _queue_track(self, account, dialog_id, message_object, source="chat"):
+        if message_object is None or not self._is_audio_track(message_object):
+            return False
+        try:
+            if int(message_object.getDialogId()) != int(dialog_id):
+                return False
+            message_id = int(message_object.getId())
+            duration_ms = int(message_object.getDuration()) * 1000
+            title = str(message_object.getMusicTitle() or _t("Аудиосообщение"))
+            track = {
+                "id": "%s:%s" % (dialog_id, message_id),
+                "dialog_id": int(dialog_id),
+                "message_id": message_id,
+                "document_id": self._document_id(message_object),
+                "temporary": self._document_id(message_object) in self._temporary_document_ids,
+                "source": source if source in ("chat", "profile", "external") else "chat",
+                "title": title[:256],
+                "duration_ms": max(0, duration_ms),
+            }
+            self._room["revision"] = self._room.get("revision", 0) + 1
+            self._room["pending_track"] = track
+            self._room["pending_track_owner"] = self._room.get("role")
+            self._pending_track_message = message_object
+            self._forward_attempted = False
+            self._track_ready_retries = 0
+            self._debug("Track queued: id=%s doc=%s msg=%s" % (track["id"], track["document_id"], track["message_id"]))
+            if not self._send_ws({
+                "type": "offer_track",
+                "room_id": self._room["room_id"],
+                "leader_token": self._room["token"],
+                "track": track,
+            }):
+                self._room["pending_track"] = None
+                return False
+            self._bulletin("info", _t("Проверяю, готов ли второй клиент к запуску трека."))
+            return True
+        except Exception:
+            self.log("[telegram_jam] track read error: " + traceback.format_exc())
+            return False
+
+    def _forward_external_track_into_jam(self, message_object):
+        if not self._room or not self._is_audio_track(message_object):
+            return
+        document_id = self._document_id(message_object)
+        if not document_id:
+            self._bulletin("error", _t("Не удалось определить аудиофайл для Jam."))
+            return
+        if self._external_track_pending and self._external_track_pending.get("document_id") == document_id:
+            return
+        account = int(self._room["account"])
+        dialog_id = int(self._room["dialog_id"])
+        self._external_track_generation += 1
+        generation = self._external_track_generation
+        self._external_track_pending = {
+            "document_id": document_id,
+            "account": account,
+            "dialog_id": dialog_id,
+            "original_id": int(message_object.getId()),
+            "started_at": int(time.time()) - 5,
+            "generation": generation,
+        }
+        self._external_track_document_id = document_id
+        self._pending_track_message = message_object
+        self._temporary_document_ids[document_id] = {
+            "account": account,
+            "dialog_id": dialog_id,
+            "original_id": int(message_object.getId()),
+            "started_at": int(time.time()) - 5,
+        }
+        self._debug("Sending external track into Jam chat: doc=%s" % document_id)
+        self._bulletin("info", _t("Добавляю трек в Jam-чат и жду второй клиент."))
+        self._send_external_track(message_object)
+        self._poll_external_track_copy(generation, 0)
+
+    def _send_external_track(self, message_object):
+        # Tracks from a profile music list are not chat messages, so they
+        # cannot be forwarded. Send the Telegram document itself by reference:
+        # no re-upload, the copy shows up as a regular audio in the Jam chat.
+        room = self._room
+        document = None
+        try:
+            document = message_object.getDocument()
+        except Exception:
+            pass
+        if not room or document is None:
+            return self._forward_track_to_guest()
+        account = int(room["account"])
+        dialog_id = int(room["dialog_id"])
+
+        def on_response(response, error):
+            if error is not None:
+                self._debug("sendMedia error: %s" % getattr(error, "text", error))
+                run_on_ui_thread(self._forward_track_to_guest)
+                return
+            try:
+                get_messages_controller(account).processUpdates(response, False)
+            except Exception:
+                self._debug_exception("processUpdates error")
+
+        def send():
+            try:
+                input_document = TLRPC.TL_inputDocument()
+                input_document.id = document.id
+                input_document.access_hash = document.access_hash
+                input_document.file_reference = document.file_reference
+                media = TLRPC.TL_inputMediaDocument()
+                media.id = input_document
+                request = TLRPC.TL_messages_sendMedia()
+                request.peer = get_messages_controller(account).getInputPeer(dialog_id)
+                request.media = media
+                request.message = ""
+                request.random_id = secrets.randbits(63)
+                self._send_tl(request, on_response, account)
+                self._debug("sendMedia requested: doc=%s" % document.id)
+            except Exception:
+                self._debug_exception("sendMedia failed, forwarding instead")
+                self._forward_track_to_guest()
+
+        run_on_ui_thread(send)
+        return True
+
+    def _send_tl(self, request, callback, account):
+        # client_utils.send_request in current exteraGram builds takes only
+        # (request, callback) and always uses the selected account.
+        try:
+            if int(account) == int(UserConfig.selectedAccount):
+                send_request(request, callback)
+                return
+        except Exception:
+            pass
+        if _RequestDelegate is not None:
+            ConnectionsManager.getInstance(int(account)).sendRequest(request, _RequestDelegate(callback))
+            return
+        send_request(request, callback)
+
+    def _is_in_jam_chat(self, message_object):
+        # A profile music list builds MessageObjects whose dialog id is the
+        # profile owner. On the Jam partner's profile that equals the Jam chat
+        # id, so also check that the message really exists in the chat.
+        room = self._room
+        try:
+            if not room or int(message_object.getDialogId()) != int(room["dialog_id"]):
+                return False
+            message_id = int(message_object.getId())
+            if message_id <= 0:
+                return False
+            found = self._find_message(room["account"], int(room["dialog_id"]), message_id)
+            return found is not None and self._document_id(found) == self._document_id(message_object)
+        except Exception:
+            return False
+
+    def _poll_external_track_copy(self, generation, attempt):
+        def check():
+            pending = getattr(self, "_external_track_pending", None)
+            if generation != getattr(self, "_external_track_generation", 0):
+                return
+            if not pending:
+                return
+            message_object = self._find_message_by_document(
+                pending["account"], pending["dialog_id"], pending["document_id"]
+            )
+            if message_object is not None:
+                self._debug("External track copy found by poll: msg=%s" % message_object.getId())
+                self._handle_external_copy_arrived(message_object)
+                return
+            if attempt >= 30:
+                self._debug("External track copy not found in time")
+                self._external_track_pending = None
+                self._external_track_document_id = ""
+                self._bulletin("error", _t("Не удалось добавить внешний трек в Jam-чат."))
+                return
+            self._poll_external_track_copy(generation, attempt + 1)
+
+        run_on_ui_thread(check, 700)
+
+    def _handle_external_copy_arrived(self, message_object):
+        pending = getattr(self, "_external_track_pending", None)
+        if not pending or not self._room:
+            return
+        self._external_track_pending = None
+        self._external_track_document_id = ""
+        self._debug("External track copy ready for offer: msg=%s" % message_object.getId())
+        self._queue_track(pending["account"], pending["dialog_id"], message_object, source="profile")
+        # The copy already exists in the Jam chat; do not forward it again if
+        # the other client reports a delayed/missing readiness state.
+        self._forward_attempted = True
+
+    def _find_message_by_document(self, account, dialog_id, document_id):
+        try:
+            try:
+                controller = get_messages_controller(account)
+            except TypeError:
+                controller = get_messages_controller()
+            dialog_messages = get_private_field(controller, "dialogMessage")
+            messages = dialog_messages.get(int(dialog_id)) if dialog_messages else None
+            if messages is not None:
+                for index in range(messages.size()):
+                    message_object = messages.get(index)
+                    if self._document_id(message_object) == document_id and self._is_audio_track(message_object):
+                        return message_object
+        except Exception:
+            self._debug("External copy lookup error: " + traceback.format_exc().splitlines()[-1])
+        return None
+
+    def _forward_track_to_guest(self):
+        if not self._room or self._pending_track_message is None:
+            return False
+        message_object = self._pending_track_message
+        account = self._room["account"]
+        dialog_id = self._room["dialog_id"]
+
+        self._temporary_document_ids[self._document_id(message_object)] = {
+            "account": account,
+            "dialog_id": dialog_id,
+            "original_id": int(message_object.getId()),
+            "started_at": int(time.time()) - 2,
+        }
+
+        def forward():
+            try:
+                messages = ArrayList()
+                messages.add(message_object)
+                SendMessagesHelper.getInstance(account).sendMessage(
+                    messages,
+                    int(dialog_id),
+                    False,
+                    False,
+                    True,
+                    0,
+                    0,
+                )
+                self._debug("Forward requested for doc=%s" % self._document_id(message_object))
+            except Exception:
+                self._debug("Forward error: " + traceback.format_exc().splitlines()[-1])
+                self.log("[telegram_jam] forward track error: " + traceback.format_exc())
+
+        run_on_ui_thread(forward)
+        return True
+
+    def _schedule_track_ready_retry(self):
+        run_on_ui_thread(self._resend_pending_offer, TRACK_READY_RETRY_MS)
+
+    def _resend_pending_offer(self):
+        if not self._room or self._room.get("pending_track_owner") != self._room.get("role"):
+            return
+        track = self._room.get("pending_track")
+        if not track:
+            return
+        self._track_ready_retries += 1
+        self._debug("Retry track offer: %s/%s" % (self._track_ready_retries, TRACK_READY_MAX_RETRIES))
+        if self._track_ready_retries > TRACK_READY_MAX_RETRIES:
+            self._room["pending_track"] = None
+            self._bulletin("error", _t("Второй клиент не получил трек за отведённое время."))
+            return
+        self._send_ws({
+            "type": "offer_track",
+            "room_id": self._room["room_id"],
+            "leader_token": self._room["token"],
+            "track": track,
+        })
+        self._schedule_track_ready_retry()
+
+    def _find_message(self, account, dialog_id, message_id, document_id=""):
+        try:
+            controller = get_messages_controller(account)
+        except TypeError:
+            controller = get_messages_controller()
+        except Exception:
+            return None
+        try:
+            dialog_messages = get_private_field(controller, "dialogMessage")
+            messages = dialog_messages.get(dialog_id) if dialog_messages else None
+            if messages is not None:
+                for index in range(messages.size()):
+                    message_object = messages.get(index)
+                    if int(message_object.getId()) == message_id:
+                        return message_object
+                    if document_id and self._document_id(message_object) == document_id:
+                        return message_object
+        except Exception:
+            self.log("[telegram_jam] track lookup error: " + traceback.format_exc())
+        try:
+            storage = get_messages_storage(account)
+            message = storage.getMessage(int(dialog_id), int(message_id))
+            if message is not None:
+                return MessageObject(account, message, True, True)
+        except TypeError:
+            try:
+                storage = get_messages_storage()
+                message = storage.getMessage(int(dialog_id), int(message_id))
+                if message is not None:
+                    return MessageObject(account, message, True, True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        return None
+
+    def _document_id(self, message_object):
+        try:
+            media = message_object.messageOwner.media
+            document = media.document if media else None
+            return str(document.id) if document else ""
+        except Exception:
+            return ""
+
+    def _message_document_id(self, message):
+        try:
+            media = message.media
+            document = media.document if media else None
+            return str(document.id) if document else ""
+        except Exception:
+            return ""
+
+    def _is_audio_track(self, message_object):
+        try:
+            return bool(message_object.isMusic() or message_object.isVoice())
+        except Exception:
+            return False
+
+    def _code_entity(self, prefix_text, command):
+        try:
+            entity = TLRPC.TL_messageEntityCode()
+            entity.offset = self._utf16_length(prefix_text)
+            entity.length = self._utf16_length(command)
+            entities = ArrayList()
+            entities.add(entity)
+            return entities
+        except Exception:
+            return None
+
+    def _utf16_length(self, text):
+        return len(text.encode("utf-16-le")) // 2
+
+    def _install_chat_menu(self):
+        try:
+            self._menu_item_id = self.add_menu_item(MenuItemData(
+                menu_type=MenuItemType.CHAT_ACTION_MENU,
+                text=self._chat_menu_text(),
+                icon="msg_music",
+                on_click=self._on_chat_menu_click,
+            ))
+        except Exception:
+            self.log("[telegram_jam] menu error: " + traceback.format_exc())
+
+    def _refresh_chat_menu(self):
+        for attr in ("_menu_item_id", "_panel_menu_item_id"):
+            try:
+                item_id = getattr(self, attr, None)
+                if item_id:
+                    self.remove_menu_item(item_id)
+            except Exception:
+                pass
+            setattr(self, attr, None)
+        self._install_chat_menu()
+        if self._room:
+            try:
+                self._panel_menu_item_id = self.add_menu_item(MenuItemData(
+                    menu_type=MenuItemType.CHAT_ACTION_MENU,
+                    text=_t("Панель Jam"),
+                    icon="msg_settings",
+                    on_click=lambda _context: self._open_panel(),
+                ))
+            except Exception:
+                self._debug_exception("Panel menu error")
+
+    def _chat_menu_text(self):
+        try:
+            fragment = get_last_fragment()
+            dialog_id = int(fragment.getDialogId()) if fragment else 0
+        except Exception:
+            dialog_id = 0
+        if self._room and self._room.get("dialog_id") == dialog_id:
+            return _t("Завершить Jam") if self._room.get("role") == "leader" else _t("Выйти из Jam")
+        return _t("Запустить Jam")
+
+    def _on_chat_menu_click(self, context):
+        try:
+            dialog_id = context.get("dialog_id")
+            if dialog_id is None:
+                dialog_id = context.get("dialogId")
+            account = context.get("account")
+            account = int(account) if account is not None else 0
+            dialog_id = int(dialog_id)
+            if self._room and self._room.get("dialog_id") == dialog_id:
+                if self._room.get("role") == "leader":
+                    self._end_jam(account, dialog_id, "")
+                else:
+                    self._leave_jam(account, dialog_id, "")
+            else:
+                self._start_jam(account, dialog_id, "")
+        except Exception:
+            self.log("[telegram_jam] menu click error: " + traceback.format_exc())
+
+    def _install_call_hook(self):
+        try:
+            service_class = find_class("org.telegram.messenger.voip.VoIPService")
+            if service_class is None:
+                return
+            method = service_class.getDeclaredMethod("onDestroy")
+            method.setAccessible(True)
+            self._call_hook = self.hook_method(method, _CallEndedHook(self))
+        except Exception:
+            self.log("[telegram_jam] call hook unavailable: " + traceback.format_exc())
+
+    def _on_call_finished(self):
+        room = self._room
+        if not room or self._call_end_in_progress:
+            return
+        self._call_end_in_progress = True
+        self._send_ws({
+            "type": "end_for_all",
+            "room_id": room["room_id"],
+        })
+        self._bulletin("info", _t("Звонок завершён, Jam остановлен."))
+
+    def _update_server_clock(self, message):
+        try:
+            self._server_offset_ms = int(message["server_time_ms"]) - self._local_now_ms()
+        except Exception:
+            pass
+
+    def _local_now_ms(self):
+        import time
+        return int(time.time() * 1000)
+
+    def _server_now_ms(self):
+        return self._local_now_ms() + self._server_offset_ms
+
+    def _local_start_time(self, state):
+        return int(state.get("start_at_server_ms", 0) or 0) - self._server_offset_ms
+
+    def _send_ws(self, message):
+        try:
+            with self._socket_lock:
+                socket = self._socket
+            if socket is None:
+                self._bulletin("error", _t("Нет подключения к Jam-серверу."))
+                return False
+            socket.send(json.dumps(message, separators=(",", ":")))
+            return True
+        except Exception:
+            self.log("[telegram_jam] send error: " + traceback.format_exc())
+            self._bulletin("error", _t("Не удалось отправить команду Jam-серверу."))
+            return False
+
+    def _disconnect(self):
+        self._disconnecting = True
+        with self._socket_lock:
+            socket = self._socket
+            self._socket = None
+        try:
+            if socket:
+                socket.close()
+        except Exception:
+            pass
+
+    def _reset_room(self, text=None, error=False, cleanup=True):
+        room = self._room
+        self._sync_generation += 1
+        self._room = None
+        self._pending = None
+        self._awaiting_track = None
+        self._received_tracks = {}
+        self._external_track_pending = None
+        if cleanup:
+            self._cleanup_temporary_tracks(room)
+        else:
+            self._forget_temporary_tracks()
+        self._disconnect()
+        self._refresh_chat_menu()
+        if text:
+            self._bulletin("error" if error else "info", text)
+
+    def _forget_temporary_tracks(self):
+        self._temporary_document_ids = {}
+        self._cleanup_texts = set()
+
+    def _cleanup_temporary_tracks(self, room=None):
+        # Snapshot and reset immediately: a new Jam must never share these
+        # sets with the cleanup of the previous one.
+        documents = dict(self._temporary_document_ids)
+        texts = set(self._cleanup_texts)
+        self._forget_temporary_tracks()
+        if not room or not self.get_setting("delete_temp_tracks", True):
+            return
+        if not documents and not texts:
+            return
+        job = {
+            "account": int(room["account"]),
+            "dialog_id": int(room["dialog_id"]),
+            # Small margin for clock skew between the phone and Telegram.
+            "since": int(room.get("started_at", 0) or 0) - 30,
+            "documents": documents,
+            "texts": texts,
+        }
+        # Give messages that are still being sent a moment to get server ids.
+        run_on_ui_thread(lambda: self._run_cleanup(job), CLEANUP_DELAY_MS)
+
+    def _run_cleanup(self, job):
+        account = job["account"]
+        dialog_id = job["dialog_id"]
+
+        def on_history(response, error):
+            if error is not None or response is None:
+                self._debug("Cleanup history error: %s" % getattr(error, "text", error))
+                return
+            ids = []
+            try:
+                messages = response.messages
+                for index in range(messages.size()):
+                    message = messages.get(index)
+                    message_id = int(message.id)
+                    if message_id <= 0 or int(getattr(message, "date", 0) or 0) < job["since"]:
+                        continue
+                    document_id = self._message_document_id(message)
+                    info = job["documents"].get(document_id) if document_id else None
+                    if info is not None and message_id != int(info.get("original_id", 0) or 0):
+                        ids.append(message_id)
+                        continue
+                    if str(getattr(message, "message", "") or "") in job["texts"]:
+                        ids.append(message_id)
+            except Exception:
+                self._debug_exception("Cleanup scan error")
+                return
+            if ids:
+                run_on_ui_thread(lambda: self._delete_messages(account, dialog_id, ids))
+
+        try:
+            request = TLRPC.TL_messages_getHistory()
+            request.peer = get_messages_controller(account).getInputPeer(dialog_id)
+            request.limit = CLEANUP_HISTORY_LIMIT
+            self._send_tl(request, on_history, account)
+        except Exception:
+            self._debug_exception("Cleanup request error")
+
+    def _delete_messages(self, account, dialog_id, ids):
+        try:
+            controller = get_messages_controller(account)
+            java_ids = ArrayList()
+            for message_id in sorted(set(ids)):
+                java_ids.add(Integer(int(message_id)))
+            # Jam copies are shared chat artifacts: revoke them for both sides.
+            for call_args in (
+                (java_ids, None, None, dialog_id, 0, True, 0),
+                (java_ids, None, None, dialog_id, True, 0),
+                (java_ids, None, None, dialog_id, True, False),
+            ):
+                try:
+                    controller.deleteMessages(*call_args)
+                    self._debug("Cleanup deleted %s messages" % java_ids.size())
+                    return
+                except Exception:
+                    continue
+            self._debug("Cleanup delete failed for ids=%s" % sorted(set(ids)))
+        except Exception:
+            self._debug_exception("Cleanup delete error")
+
+    def _panel_port(self):
+        value = str(self.get_setting("panel_port", "") or "").strip()
+        try:
+            port = int(value)
+        except ValueError:
+            return 0
+        return port if 1024 <= port <= 65535 else 0
+
+    def _open_panel(self):
+        try:
+            port = self._panel_port()
+            if self._panel and self._panel.requested_port != port:
+                self._panel.close()
+                self._panel = None
+            if not self._panel:
+                self._panel = _JamPanelServer(self, port)
+                if port and self._panel.port != port:
+                    self._bulletin("info", _t("Порт %s занят, панель открыта на другом.") % port)
+            self._debug("Opening panel: port=%s" % self._panel.port)
+            fragment = get_last_fragment()
+            context = fragment.getParentActivity() if fragment else ApplicationLoader.applicationContext
+            Browser.openUrl(context, self._panel.url, False)
+        except Exception:
+            self._debug("Panel open error: " + traceback.format_exc().splitlines()[-1])
+            self._bulletin("error", _t("Не удалось открыть локальную панель Jam."))
+
+    def _can_control(self, room):
+        return bool(room) and (room.get("role") == "leader" or room.get("control_mode") == "both")
+
+    def _track_message(self, room, track):
+        message_object = self._received_tracks.get(track.get("id"))
+        if message_object is None:
+            message_object = self._find_message(
+                room["account"], int(room["dialog_id"]), int(track["message_id"]),
+                str(track.get("document_id", "") or ""),
+            )
+        return message_object
+
+    def _panel_state(self):
+        room = self._room
+        if not room:
+            return {"active": False}
+        state = room.get("state") or {}
+        track = state.get("track") or {}
+        participants = room.get("participants") or {}
+        duration = int(track.get("duration_ms", 0) or 0)
+        playing = bool(state.get("playing"))
+        position = self._state_position(state, duration) if playing else int(state.get("position_ms", 0) or 0)
+        if track:
+            try:
+                controller = MediaController.getInstance()
+                current = controller.getPlayingMessageObject()
+                if self._matches_track(current, track):
+                    position = self._message_position(current, duration)
+                    playing = not controller.isMessagePaused()
+                else:
+                    playing = False
+            except Exception:
+                pass
+        return {
+            "active": True,
+            "role": str(room.get("role") or "guest"),
+            "control_mode": str(room.get("control_mode") or "leader"),
+            "can_control": self._can_control(room),
+            "has_track": bool(track),
+            "loading": bool(room.get("pending_track")),
+            "track": str(track.get("title") or _t("Трек не выбран")),
+            "playing": playing,
+            "position_ms": int(position),
+            "duration_ms": duration,
+            "leader_name": str(participants.get("leader") or _t("Хост")),
+            "guest_name": str(participants.get("guest") or _t("Ждём гостя")),
+            "leader_connected": bool(participants.get("leader_connected", room.get("role") == "leader")),
+            "guest_connected": bool(participants.get("guest_connected", room.get("role") == "guest")),
+            "server": self._server_label(room.get("server_url", "")),
+        }
+
+    def _panel_action(self, action, value=""):
+        room = self._room
+        if not room:
+            return
+        if action == "leave":
+            self._leave_jam(room["account"], room["dialog_id"], "")
+            return
+        if action == "end":
+            self._end_jam(room["account"], room["dialog_id"], "")
+            return
+        if action == "mode":
+            self._set_control_mode("both" if value == "both" else "leader", persist=True)
+            return
+        if action not in ("toggle", "seek", "skip"):
+            return
+        if not self._can_control(room):
+            self._bulletin("error", _t("Управлять плеером может только хост."))
+            return
+        try:
+            track = (room.get("state") or {}).get("track")
+            if not track:
+                self._bulletin("error", _t("Сначала добавь трек в Jam."))
+                return
+            duration = int(track.get("duration_ms", 0) or 0)
+            controller = MediaController.getInstance()
+            current = controller.getPlayingMessageObject()
+            matched = self._matches_track(current, track)
+            if matched:
+                position = self._message_position(current, duration)
+                playing = not controller.isMessagePaused()
+            else:
+                position = self._state_position(room.get("state") or {}, duration)
+                playing = False
+            if action == "toggle":
+                playing = not playing
+            elif action == "seek":
+                position = int(float(value))
+            else:
+                position += int(float(value))
+            if duration > 0:
+                position = min(position, max(0, duration - 500))
+            position = max(0, position)
+            # Send the state explicitly and apply it through the same path as
+            # remote updates. Relying on player hooks loses quick play+seek pairs.
+            lead_ms = 400 if playing else 0
+            state = {
+                "track": track,
+                "playing": playing,
+                "position_ms": int(position),
+                "start_at_server_ms": self._server_now_ms() + lead_ms,
+                "revision": room.get("revision", 0) + 1,
+            }
+            self._send_room_state(state)
+            self._play_synced_state(state)
+        except Exception:
+            self._debug_exception("Panel action error")
+
+    def _panel_html(self, token):
+        lang = _lang()
+        page = PANEL_HTML.replace("__TOKEN__", escape(token))
+        page = page.replace("__LANG__", lang)
+        return page.replace("__I18N__", json.dumps(PANEL_STRINGS[lang], ensure_ascii=False))
+
+    def _debug(self, message):
+        timestamp = time.strftime("%H:%M:%S", time.localtime())
+        entry = "%s  %s" % (timestamp, message)
+        entries = getattr(self, "_debug_entries", None)
+        if entries is not None:
+            entries.append(entry)
+            del entries[:-80]
+        try:
+            self.log("[telegram_jam] " + entry)
+        except Exception:
+            pass
+
+    def _debug_exception(self, title):
+        trace = traceback.format_exc().strip().splitlines()
+        self._debug(title)
+        for line in trace[-8:]:
+            self._debug("  " + line)
+
+    def _safe_setup(self, name, callback):
+        try:
+            callback()
+            self._debug("Setup OK: " + name)
+        except Exception:
+            self._debug_exception("Setup failed: " + name)
+
+    def _copy_diagnostics(self):
+        entries = getattr(self, "_debug_entries", [])
+        copy_to_clipboard("Telegram Jam diagnostics\n" + "\n".join(entries))
+
+    def _clear_diagnostics(self):
+        self._debug_entries = []
+        self._bulletin("success", _t("Журнал Jam очищен."))
+
+    def _send_text(self, account, dialog_id, text, entities=None, cleanup_after_jam=False):
+        if cleanup_after_jam:
+            self._cleanup_texts.add(text)
+        def send():
+            try:
+                params = SendMessagesHelper.SendMessageParams()
+                params.peer = int(dialog_id)
+                params.message = text
+                if entities:
+                    params.entities = entities
+                SendMessagesHelper.getInstance(account).sendMessage(params)
+            except Exception:
+                self.log("[telegram_jam] send text error: " + traceback.format_exc())
+
+        run_on_ui_thread(send)
+
+    # Invite code layout (base64url, no padding):
+    #   header(1) | secret(n) | xor(server address) | tag(2)
+    # header: 0x80 marker, 0x40 plain ws://, 0x20 default /jam path, low 5 bits n.
+    # The server address is XOR-ed with a SHA-256 keystream derived from the
+    # one-time room secret, so the code is opaque and stays short. The tag
+    # catches codes that were copied partially.
+    def _invite_keystream(self, secret, length):
+        out = b""
+        counter = 0
+        while len(out) < length:
+            out += hashlib.sha256(b"telegram-jam:" + secret + bytes([counter])).digest()
+            counter += 1
+        return out[:length]
+
+    def _invite_tag(self, header, secret, address):
+        return hashlib.sha256(b"telegram-jam-tag:" + header + secret + address).digest()[:2]
+
+    def _encode_invite(self, server_url, invite_code):
+        try:
+            secret = base64.urlsafe_b64decode(invite_code + "=" * (-len(invite_code) % 4))
+            if not 0 < len(secret) < 32:
+                return invite_code
+            plain_ws = server_url.startswith("ws://")
+            rest = server_url.split("://", 1)[1]
+            default_path = rest.endswith(DEFAULT_SERVER_PATH) and "/" not in rest[: -len(DEFAULT_SERVER_PATH)]
+            if default_path:
+                rest = rest[: -len(DEFAULT_SERVER_PATH)]
+            address = rest.encode("utf-8")
+            header = bytes([INVITE_MARK | (0x40 if plain_ws else 0) | (0x20 if default_path else 0) | len(secret)])
+            stream = self._invite_keystream(secret, len(address))
+            hidden = bytes(a ^ b for a, b in zip(address, stream))
+            payload = header + secret + hidden + self._invite_tag(header, secret, address)
+            return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+        except Exception:
+            self._debug_exception("Invite encode error")
+            return invite_code
+
+    def _decode_invite(self, code):
+        try:
+            payload = base64.urlsafe_b64decode(code + "=" * (-len(code) % 4))
+            if len(payload) < 4 or not payload[0] & INVITE_MARK:
+                return None
+            header = payload[:1]
+            size = payload[0] & 0x1F
+            secret = payload[1:1 + size]
+            hidden = payload[1 + size:-2]
+            if len(secret) != size or not hidden:
+                return None
+            stream = self._invite_keystream(secret, len(hidden))
+            address = bytes(a ^ b for a, b in zip(hidden, stream))
+            if self._invite_tag(header, secret, address) != payload[-2:]:
+                return None
+            scheme = "ws://" if payload[0] & 0x40 else "wss://"
+            server_url = scheme + address.decode("utf-8")
+            if payload[0] & 0x20:
+                server_url += DEFAULT_SERVER_PATH
+            if not self._valid_server_url(server_url):
+                return None
+            return server_url, base64.urlsafe_b64encode(secret).decode("ascii").rstrip("=")
+        except Exception:
+            return None
+
+    def _server_label(self, server_url):
+        try:
+            return server_url.split("://", 1)[1].split("/", 1)[0]
+        except Exception:
+            return ""
+
+    def _prefix(self):
+        return (self.get_setting("prefix", DEFAULT_PREFIX) or DEFAULT_PREFIX).strip() or DEFAULT_PREFIX
+
+    def _control_mode(self):
+        return "both" if self.get_setting("control_mode", 0) == 1 else "leader"
+
+    def _server_url(self):
+        value = (self.get_setting("server_url", DEFAULT_SERVER_URL) or DEFAULT_SERVER_URL).strip()
+        return value if self._valid_server_url(value) else ""
+
+    def _valid_server_url(self, value):
+        return isinstance(value, str) and (value.startswith("wss://") or value.startswith("ws://")) and "/" in value[5:]
+
+    def _peer_dialog_id(self, params):
+        try:
+            return int(params.peer)
+        except Exception:
+            return None
+
+    def _is_private_dialog(self, dialog_id):
+        return dialog_id is not None and dialog_id > 0
+
+    def _display_name(self, account):
+        try:
+            user = UserConfig.getInstance(account).getCurrentUser()
+            if user:
+                parts = [part for part in (user.first_name, user.last_name) if part]
+                if parts:
+                    return " ".join(parts)
+        except Exception:
+            pass
+        return _t("Пользователь")
+
+    def _bulletin(self, kind, text):
+        try:
+            fragment = get_last_fragment()
+            if kind == "error":
+                BulletinHelper.show_error(text, fragment)
+            elif kind == "success":
+                BulletinHelper.show_success(text, fragment)
+            else:
+                BulletinHelper.show_info(text, fragment)
+        except Exception:
+            self.log("[telegram_jam] bulletin error: " + traceback.format_exc())
