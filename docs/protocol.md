@@ -1,12 +1,12 @@
-# WebSocket Protocol
+# Протокол WebSocket
 
-Connect through `wss://your-domain.example/jam`. Messages are UTF-8 JSON objects and must not exceed 4 KiB by default.
+Подключение: `wss://your-domain.example/jam`. Сообщения — JSON-объекты в UTF-8, по умолчанию не больше 4 КиБ.
 
-Every client message has a `type` field. Every server response has a `type` field and may include the original `request_id`.
+У каждого сообщения клиента есть поле `type`. У каждого ответа сервера тоже есть `type`, и в нём может вернуться исходный `request_id`.
 
-## Versions
+## Версии
 
-On connect the server sends `hello`:
+После подключения сервер присылает `hello`:
 
 ```json
 {"type":"hello","server_time_ms":1760000000000,"max_rooms":100,
@@ -15,7 +15,7 @@ On connect the server sends `hello`:
  "update_url":"https://t.me/shit_plugins"}
 ```
 
-`create_room`, `join_room` and `resume_room` must include `"client_version":"0.9.0"` (and `"protocol":2`). A missing or lower version than `min_plugin_version` is refused:
+В `create_room`, `join_room` и `resume_room` клиент обязан передать `"client_version":"0.9.0"` (и `"protocol":2`). Если версии нет или она ниже `min_plugin_version`, сервер отказывает:
 
 ```json
 {"type":"error","code":"client_outdated","client_version":"0.8.1",
@@ -23,17 +23,17 @@ On connect the server sends `hello`:
  "latest_plugin_version":"0.9.0","update_url":"https://t.me/shit_plugins"}
 ```
 
-The plugin shows an update dialog with both versions; **Update** opens `update_url` (the plugin channel by default). `GET /health` includes the same version fields.
+Плагин показывает окно обновления с обеими версиями; кнопка **Обновить** открывает `update_url` (по умолчанию канал плагина). `GET /health` отдаёт те же поля версий.
 
-## Create A Room
+## Создание комнаты
 
-Client:
+Клиент:
 
 ```json
 {"type":"create_room","request_id":"local-id","client_version":"0.9.0","protocol":2}
 ```
 
-Server:
+Сервер:
 
 ```json
 {
@@ -46,46 +46,46 @@ Server:
 }
 ```
 
-The plugin sends the short one-time `invite_code` to the other person in a visible Telegram invitation. The room ID and leader token never appear in the invitation. Tokens must not be logged or placed in public URLs.
+Плагин отправляет собеседнику короткий одноразовый `invite_code` в видимом приглашении в Telegram. ID комнаты и токен хоста в приглашение не попадают. Токены нельзя писать в логи и класть в публичные URL.
 
-## Join A Room
+## Вход в комнату
 
-Client:
+Клиент:
 
 ```json
-{"type":"join_room","invite_code":"<raw secret from the packed code>"}
+{"type":"join_room","invite_code":"<секрет из упакованного кода>","client_version":"0.9.0","protocol":2}
 ```
 
-The invite code is single-use: 10 random bytes, base64url.
+Код приглашения одноразовый: 10 случайных байт в base64url. При успешном входе сервер возвращает `guest_token`; его нужно хранить локально для переподключения к той же комнате.
 
-### Invite code in the chat
+### Код приглашения в чате
 
-The plugin does not send the raw `invite_code`. It packs the code together with the server address, so the guest connects to the host's server even if their own settings point elsewhere (the guest's settings are not changed):
+Плагин не отправляет `invite_code` как есть. Он упаковывает код вместе с адресом сервера, поэтому гость подключается к серверу хоста, даже если в его настройках указан другой (сами настройки гостя не меняются):
 
 ```
 base64url( header(1) | secret(n) | address XOR keystream | tag(2) )
 ```
 
-- `header`: `0x80` marker, `0x40` for `ws://` (otherwise `wss://`), `0x20` when the path is the default `/jam` (then it is omitted), low 5 bits are `n`;
-- `address`: `host[:port]` plus the path when it is not `/jam`;
-- `keystream`: `SHA-256("telegram-jam:" | secret | counter)` blocks;
-- `tag`: first 2 bytes of `SHA-256("telegram-jam-tag:" | header | secret | address)`, rejects partially copied codes.
+- `header`: маркер `0x80`, `0x40` для `ws://` (иначе `wss://`), `0x20`, если путь стандартный `/jam` (тогда он не записывается), младшие 5 бит — `n`;
+- `address`: `host[:port]` плюс путь, если он не `/jam`;
+- `keystream`: блоки `SHA-256("telegram-jam:" | secret | counter)`;
+- `tag`: первые 2 байта `SHA-256("telegram-jam-tag:" | header | secret | address)`, отсекает коды, скопированные не целиком.
 
-This hides the address from a casual reader and keeps the code around 38 characters for `wss://jam.example.com/jam`. It is obfuscation, not access control: anyone holding the whole code can join, exactly as before, and the code stops working after the first join. Codes that do not decode are treated as legacy raw codes for the server in the guest's settings. A successful join returns a `guest_token`; keep it locally for reconnecting to the same room.
+Так адрес не виден при беглом взгляде, а код для `wss://jam.example.com/jam` занимает около 38 символов. Это маскировка, а не контроль доступа: кто получил код целиком, тот может войти, как и раньше, а после первого входа код перестаёт работать. Коды, которые не удалось декодировать, считаются старыми «сырыми» кодами для сервера из настроек гостя.
 
-## Resume A Room
+## Переподключение
 
-Client:
+Клиент:
 
 ```json
-{"type":"resume_room","room_id":"...","role":"leader","token":"..."}
+{"type":"resume_room","room_id":"...","role":"leader","token":"...","client_version":"0.9.0"}
 ```
 
-`role` is `leader` or `guest`. The server broadcasts `peer_presence` whenever a participant connects or disconnects.
+`role` — `leader` или `guest`. Когда участник подключается или отключается, сервер рассылает `peer_presence`.
 
-## Playback State
+## Состояние плеера
 
-The leader can always update playback state. The guest can do it too while `control_mode` is `both`:
+Хост может обновлять состояние всегда, гость — пока `control_mode` равен `both`:
 
 ```json
 {
@@ -108,11 +108,11 @@ The leader can always update playback state. The guest can do it too while `cont
 }
 ```
 
-The server validates and broadcasts this state as `room_state`. It does not download, proxy, or inspect the track. `dialog_id` and `message_id` let each plugin instance find the same already-visible Telegram audio message in the shared private chat.
+Сервер проверяет состояние и рассылает его как `room_state`. Сам трек он не скачивает, не передаёт и не анализирует. По `dialog_id`, `message_id` и `document_id` каждый плагин находит нужное аудиосообщение в общем личном чате.
 
-## Track Readiness
+## Готовность трека
 
-Before the leader starts a new track, the plugin sends `offer_track` to the guest:
+Перед запуском нового трека плагин отправляет собеседнику `offer_track`:
 
 ```json
 {
@@ -123,55 +123,55 @@ Before the leader starts a new track, the plugin sends `offer_track` to the gues
 }
 ```
 
-The guest checks its local Telegram message cache/database and reports exactly one status:
+Собеседник ищет сообщение в локальном кеше и базе Telegram и отвечает одним статусом:
 
 ```json
 {"type":"track_status","room_id":"...","track_id":"...","status":"ready"}
 ```
 
-or:
+или:
 
 ```json
 {"type":"track_status","room_id":"...","track_id":"...","status":"missing"}
 ```
 
-The server forwards that status to the leader. Only after `ready` does the leader send `set_state` with a shared start time. This avoids starting a track before the second client can resolve it.
+Сервер пересылает статус отправителю трека. Только после `ready` тот отправляет `set_state` с общим временем старта. Так трек не запускается раньше, чем второй клиент сможет его найти.
 
-## Track Fields
+## Поля трека
 
-Besides `id`, `dialog_id`, `message_id`, `title`, `document_id` and `duration_ms`, a track may include:
+Кроме `id`, `dialog_id`, `message_id`, `title`, `document_id` и `duration_ms`, у трека могут быть:
 
-- `source` - `chat` (picked inside the Jam chat, default), `profile` (started from a profile music list or another chat and copied into the Jam chat), or `external`;
-- `temporary` - `true` when the message is a service copy the plugin deletes after the Jam;
-- `performer` - optional artist name, up to 128 characters.
+- `source` — `chat` (выбран в Jam-чате, по умолчанию), `profile` (включён из музыки в профиле или из другого чата и скопирован в Jam-чат) или `external`;
+- `temporary` — `true`, если сообщение служебная копия, которую плагин удалит после Jam;
+- `performer` — исполнитель, до 128 символов.
 
-The server drops any other fields before storing or forwarding a track.
+Остальные поля сервер отбрасывает до сохранения и пересылки трека.
 
-## Revisions
+## Ревизии
 
-The server owns `state.revision`. Each accepted `set_state` gets `max(previous + 1, client revision)`, so revisions always grow even when both participants control the player. The broadcast `room_state` also carries `state.updated_by` (`leader` or `guest`). `position_ms` is clamped to `duration_ms`.
+Номер `state.revision` назначает сервер. Каждое принятое `set_state` получает `max(предыдущий + 1, ревизия клиента)`, поэтому номер всегда растёт, даже когда плеером управляют оба участника. В рассылаемом `room_state` есть ещё `state.updated_by` (`leader` или `guest`). `position_ms` ограничивается `duration_ms`.
 
-## Control Mode
+## Режим управления
 
-`set_control_mode` is leader-only and takes `leader` or `both`. Everyone receives `control_mode`. If the leader switches back to `leader` while a guest-offered track is still waiting for readiness, the server cancels it:
+`set_control_mode` доступен только хосту, значения — `leader` или `both`. Все участники получают `control_mode`. Если хост переключает обратно на `leader`, пока трек гостя ещё ждёт готовности, сервер отменяет его:
 
 ```json
 {"type":"track_cancelled","room_id":"...","track_id":"...","reason":"control_mode_changed"}
 ```
 
-## Other Messages
+## Остальные сообщения
 
-- `get_state` - returns the current `room_state`.
-- `ping` - returns `pong` with server time. The plugin sends it every 25 seconds so reverse proxies do not drop idle connections.
-- `end_room` - leader-only; closes the room for both participants.
-- `leave_room` - leaves the room. When the leader leaves while the guest is online, the guest becomes the leader (`role_changed`).
-- `end_for_all` - either participant closes the room for both; used when the related call ends.
+- `get_state` — вернуть текущий `room_state`.
+- `ping` — ответ `pong` со временем сервера. Плагин отправляет его каждые 25 секунд, чтобы прокси не закрывал неактивное соединение.
+- `end_room` — только хост; закрывает комнату для обоих.
+- `leave_room` — выйти из комнаты. Если хост выходит, пока гость в сети, хостом становится гость (`role_changed`).
+- `end_for_all` — любой участник закрывает комнату для обоих; используется, когда заканчивается звонок.
 
-## Limits
+## Ограничения
 
-- two participants per room;
-- one active track state per room;
-- up to 100 rooms and 200 WebSocket connections by default;
-- no more than 10 client events per second;
-- room state is limited to 4 KiB messages;
-- empty rooms expire after 5 minutes, inactive rooms after 30 minutes, and all rooms after 6 hours.
+- два участника в комнате;
+- одно состояние трека на комнату;
+- по умолчанию до 100 комнат и 200 WebSocket-соединений;
+- не больше 10 сообщений в секунду от клиента;
+- сообщения не больше 4 КиБ;
+- пустые комнаты удаляются через 5 минут, неактивные — через 30 минут, любые — через 6 часов.

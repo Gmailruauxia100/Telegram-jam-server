@@ -1,40 +1,40 @@
-# Self-hosting
+# Свой сервер
 
-The server is a single Node.js process with no database. A VPS with 1 GB RAM is plenty; the default limits keep it under ~200 MB.
+Сервер — один процесс Node.js без базы данных. Хватит VPS с 1 ГБ памяти: с лимитами по умолчанию он занимает до ~200 МБ.
 
-## Requirements
+## Что нужно
 
-- Linux with systemd, Node.js 18 or newer.
-- A domain or subdomain pointing to the server, e.g. `jam.example.com`.
-- A reverse proxy for TLS: Nginx or Caddy. Use the one you already have; do not run both on ports 80/443.
+- Linux с systemd, Node.js 18 или новее.
+- Домен или поддомен, указывающий на сервер, например `jam.example.com`.
+- Обратный прокси для TLS: Nginx или Caddy. Используй тот, что уже стоит; не запускай оба на портах 80/443.
 
-## 1. Get the code
+## 1. Скачать код
 
 ```bash
 sudo useradd --system --home /opt/telegram-jam --shell /usr/sbin/nologin telegram-jam
-sudo git clone https://github.com/<you>/telegram-jam.git /opt/telegram-jam
+sudo git clone https://github.com/Gmailruauxia100/Telegram-jam-server.git /opt/telegram-jam
 cd /opt/telegram-jam/server
 sudo npm ci --omit=dev
 sudo cp .env.example .env
 sudo chown -R telegram-jam:telegram-jam /opt/telegram-jam
 ```
 
-## 2. Configure
+## 2. Настроить
 
-Edit `/opt/telegram-jam/server/.env`. The defaults are fine for most setups:
+Настройки лежат в `/opt/telegram-jam/server/.env`. Для большинства случаев подходят значения по умолчанию:
 
-| Variable | Default | Meaning |
+| Переменная | По умолчанию | Что значит |
 |---|---|---|
-| `HOST` / `PORT` | `127.0.0.1` / `3000` | Listen address. Keep it on localhost behind the proxy. |
-| `PATHNAME` | `/jam` | WebSocket path. Plugins assume `/jam` and pack shorter invite codes for it. |
-| `MAX_ROOMS` / `MAX_CONNECTIONS` | `100` / `200` | Hard limits. |
-| `MAX_EVENTS_PER_SECOND` | `10` | Per-connection rate limit. |
-| `EMPTY_ROOM_MS` / `INACTIVE_ROOM_MS` / `MAX_ROOM_LIFETIME_MS` | 5 min / 30 min / 6 h | Room expiry. |
-| `MIN_PLUGIN_VERSION` | `0.9.0` | Older plugins are refused and shown an update dialog. |
-| `LATEST_PLUGIN_VERSION` | `MIN_PLUGIN_VERSION` | Newest published plugin; older plugins show "a new version is available". |
-| `UPDATE_URL` | `https://t.me/shit_plugins` | Where the plugin's **Update** button leads. `t.me` links open inside Telegram. |
+| `HOST` / `PORT` | `127.0.0.1` / `3000` | Адрес, который слушает сервер. За прокси оставь localhost. |
+| `PATHNAME` | `/jam` | Путь WebSocket. Плагин рассчитан на `/jam` и для него делает код приглашения короче. |
+| `MAX_ROOMS` / `MAX_CONNECTIONS` | `100` / `200` | Жёсткие лимиты. |
+| `MAX_EVENTS_PER_SECOND` | `10` | Лимит сообщений в секунду на одно соединение. |
+| `EMPTY_ROOM_MS` / `INACTIVE_ROOM_MS` / `MAX_ROOM_LIFETIME_MS` | 5 мин / 30 мин / 6 ч | Когда удаляются пустые, неактивные и все комнаты. |
+| `MIN_PLUGIN_VERSION` | `0.9.0` | Плагины старее не пускаются и показывают окно обновления. |
+| `LATEST_PLUGIN_VERSION` | `MIN_PLUGIN_VERSION` | Последняя опубликованная версия; у кого старее, увидят «Вышла новая версия». |
+| `UPDATE_URL` | `https://t.me/shit_plugins` | Куда ведёт кнопка **Обновить**. Ссылки `t.me` открываются прямо в Telegram. |
 
-## 3. Run as a service
+## 3. Запустить как службу
 
 ```bash
 sudo cp /opt/telegram-jam/deploy/telegram-jam.service /etc/systemd/system/
@@ -43,15 +43,15 @@ sudo systemctl enable --now telegram-jam
 systemctl status telegram-jam
 ```
 
-## 4. Reverse proxy
+## 4. Обратный прокси
 
-**Caddy** (gets certificates automatically): add `deploy/Caddyfile.example` to your Caddyfile with your domain and reload Caddy.
+**Caddy** (сам получает сертификат): добавь блок из `deploy/Caddyfile.example` в свой Caddyfile, подставь домен и перезагрузи Caddy.
 
-**Nginx**: copy `deploy/nginx.conf.example` to `/etc/nginx/sites-available/telegram-jam`, replace `jam.example.com`, get a certificate (`sudo certbot certonly --nginx -d jam.example.com`), enable the site and run `sudo nginx -t && sudo systemctl reload nginx`.
+**Nginx**: скопируй `deploy/nginx.conf.example` в `/etc/nginx/sites-available/telegram-jam`, замени `jam.example.com`, получи сертификат (`sudo certbot certonly --nginx -d jam.example.com`), включи сайт и выполни `sudo nginx -t && sudo systemctl reload nginx`.
 
-Both `/jam` (WebSocket) and `/` (landing page and `/health`) must be proxied. Keep `proxy_read_timeout` well above 25 s: the plugin pings every 25 s, and Nginx's default 60 s timeout would otherwise close idle Jams.
+Проксировать нужно и `/jam` (WebSocket), и `/` (страница сервера и `/health`). `proxy_read_timeout` держи заметно больше 25 секунд: плагин пингует сервер раз в 25 секунд, а с таймаутом Nginx по умолчанию (60 секунд) неактивные Jam могут обрываться.
 
-## 5. Check it
+## 5. Проверить
 
 ```bash
 curl https://jam.example.com/health
@@ -59,9 +59,9 @@ curl https://jam.example.com/health
 #  "min_plugin_version":"0.9.0","latest_plugin_version":"0.9.0","update_url":"https://t.me/shit_plugins"}
 ```
 
-Then set `wss://jam.example.com/jam` as **Jam server address** in the plugin and start a Jam. Guests do not need to change anything: the invite code carries your server address.
+Потом укажи `wss://jam.example.com/jam` в поле **Адрес Jam-сервера** в плагине и запусти Jam. Гостям ничего менять не нужно: адрес твоего сервера зашит в код приглашения.
 
-## Updating
+## Обновление
 
 ```bash
 cd /opt/telegram-jam
@@ -70,13 +70,13 @@ cd server && sudo -u telegram-jam npm ci --omit=dev
 sudo systemctl restart telegram-jam
 ```
 
-A restart drops active rooms; participants just start a new Jam.
+Перезапуск сбрасывает активные комнаты: участникам нужно просто запустить Jam заново.
 
-After publishing a new plugin in the channel, set `LATEST_PLUGIN_VERSION` to its version and restart: users get "a new version is available" with a button to the channel. To force everyone to update (for example after a protocol change), also raise `MIN_PLUGIN_VERSION`.
+Когда выкладываешь новую версию плагина в канал, пропиши её в `LATEST_PLUGIN_VERSION` и перезапусти сервер: у пользователей появится «Вышла новая версия» с кнопкой в канал. Чтобы заставить всех обновиться (например, после изменения протокола), подними ещё и `MIN_PLUGIN_VERSION`.
 
-## Troubleshooting
+## Если что-то не работает
 
-- **Jam ends after about a minute**: the proxy closes idle WebSockets. Raise `proxy_read_timeout` (Nginx) or check other proxies/CDNs in front.
-- **"Could not connect to the Jam server"**: check `systemctl status telegram-jam`, the proxy config for `/jam`, and that the address starts with `wss://` and ends with `/jam`.
-- **502 from Nginx**: the service is not running or listens on another port than `proxy_pass`.
-- Logs: `journalctl -u telegram-jam -f`.
+- **Jam обрывается примерно через минуту** — прокси закрывает неактивные WebSocket-соединения. Увеличь `proxy_read_timeout` (Nginx) или проверь другие прокси и CDN перед сервером.
+- **«Не удалось подключиться к Jam-серверу»** — проверь `systemctl status telegram-jam`, настройку `/jam` в прокси и что адрес начинается с `wss://` и заканчивается на `/jam`.
+- **502 от Nginx** — служба не запущена или слушает не тот порт, что указан в `proxy_pass`.
+- Логи: `journalctl -u telegram-jam -f`.

@@ -1,9 +1,9 @@
-# Telegram Jam plugin
+# Плагин Telegram Jam
 
-`telegram_jam.plugin` is an exteraGram plugin, published in [@shit_plugins](https://t.me/shit_plugins). Tap the file in Telegram and install it.
+`telegram_jam.plugin` — плагин для exteraGram, публикуется в канале [@shit_plugins](https://t.me/shit_plugins). Нажми на файл в Telegram и установи его.
 
-The plugin talks only to the Jam server: room ids, tokens and player state. Audio, calls and chats never leave Telegram.
+Плагин общается только с Jam-сервером: идентификаторы комнаты, токены и состояние плеера. Аудио, звонки и переписка из Telegram не уходят.
 
-The plugin follows the app language: Russian for a Russian interface, English otherwise.
+Язык плагина следует языку Telegram: русский для русского интерфейса, английский для остальных.
 
-See the [main README](../README.md) for usage and settings.
+Как пользоваться и что настраивать — в [основном README](../README.md).

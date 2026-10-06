@@ -1,19 +1,19 @@
-# Privacy
+# Приватность
 
-Telegram Jam server stores only temporary in-memory room data required to synchronize playback:
+Сервер Telegram Jam хранит в памяти только временные данные комнаты, нужные для синхронизации:
 
-- random room IDs and opaque access-token hashes;
-- participant connection state;
-- track reference and optional display title supplied by the clients;
-- playback position, play/pause status, revision, and timestamps;
-- the plugin version, used only to tell outdated clients to update.
+- случайные идентификаторы комнат и хеши токенов доступа;
+- кто из участников сейчас подключён;
+- ссылку на трек и его название, которые прислали клиенты;
+- позицию, состояние «играет/пауза», номер ревизии и отметки времени;
+- версию плагина — только чтобы подсказать устаревшим клиентам обновиться.
 
-It does not receive, proxy, store, or analyze:
+Сервер не получает, не передаёт дальше, не хранит и не анализирует:
 
-- audio files or audio streams;
-- Telegram login sessions, API tokens, phone numbers, or contacts;
-- Telegram call audio;
-- chat messages, except room data deliberately sent by the plugin;
-- music-service credentials.
+- аудиофайлы и аудиопотоки;
+- сессии входа в Telegram, API-токены, номера телефонов и контакты;
+- звук звонков Telegram;
+- сообщения из чатов, кроме данных комнаты, которые плагин отправляет сам;
+- данные для входа в музыкальные сервисы.
 
-Rooms are removed from memory on explicit end, inactivity timeout, empty-room timeout, or process restart. The server uses no database.
+Комнаты удаляются из памяти при завершении Jam, по таймауту неактивности, когда комната пустая или при перезапуске процесса. Базы данных у сервера нет.
