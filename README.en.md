@@ -2,24 +2,30 @@
 
 [Русский](README.md) · **English**
 
-Listen to music together in Telegram, like Spotify Jam. Two people in a private chat get the same track, pause and position in their Telegram players at the same time.
+Listen to music together in Telegram, like Spotify Jam. Up to 5 people hear the same track, with pause, seeking and position synced in the regular Telegram player.
 
 Telegram Jam is an [exteraGram](https://exteragram.app) plugin plus a small self-hostable sync server.
 
 ## How it works
 
-- Tracks are ordinary Telegram audio messages. When the host plays a track that the guest does not have yet (from a profile or another chat), the plugin sends a copy into the Jam chat. Copies are deleted when the Jam ends (optional).
-- The server only relays room state: which track, playing or paused, position, revision. It never receives audio, calls, messages or Telegram account data. Rooms live in RAM and vanish when the Jam ends.
+- One person creates the lobby: the **creator**. Each guest is invited in their private chat with the creator, and tracks travel through those chats: whoever lacks a track gets a copy from the creator's plugin. Copies are deleted when the Jam ends (optional).
+- The **host** controls the player, kicks members and hands over the host role. The creator starts as host; the role can go to anyone.
+- If the host leaves or is offline for more than 15 seconds, another online member becomes host. If the creator leaves, the lobby goes on and the creator role (inviting and sharing tracks) moves to the host. The lobby closes only when nobody is left or someone presses "End Jam".
+- If the connection drops, the plugin reconnects by itself (for up to 90 seconds) and returns to the same lobby. If Telegram crashes or is closed, the plugin rejoins after it starts again, as long as the lobby is alive (an offline member is kept for 2 minutes).
+- The panel opens inside Telegram, like a mini app.
+- The server only relays room state: members, which track, playing or paused, position. It never receives audio, calls, messages or Telegram account data. Rooms live in RAM and vanish when the Jam ends.
 - Playback starts on a shared server clock, so both players start together.
 
 ## Features
 
-- Start a Jam from the chat menu; the invite is a one-tap command.
+- Lobbies of up to 5 people on the public server. On your own server, set `MAX_PARTICIPANTS` in `server/.env` (2–50) and restart it; see [self-hosting](docs/self-hosting.md#сколько-человек-в-лобби).
+- Start a Jam from the chat menu; "Invite to Jam" adds more people. Invite codes work once and for 5 minutes.
+- Everyone sees who joins and leaves. The host can hand over the host role, kick members and unban them.
 - Play any track: from the Jam chat, from a profile music list or from another chat.
-- Host and guest roles. The host can let the guest control the player.
-- Local panel in Telegram's browser: seek bar, play/pause, ±10 s, participants, guest-control toggle, leave or end the Jam.
-- The invite code carries the host's server address, so the guest connects to the right server with no setup.
-- Update check: the server announces the latest and minimum plugin versions; outdated plugins see an update dialog that opens the plugin channel.
+- The host can let everyone control the player.
+- Panel right inside Telegram: seek bar, play/pause, ±10 s, members, block list. Optionally a "🎵 Jam" tab among chat folders.
+- The invite code carries the server, the room code and a one-time ticket, so guests connect with no setup.
+- Update check: the plugin looks for a new version on start (can be turned off), and the server refuses plugins that are too old.
 - Russian and English interface, following the Telegram app language.
 
 ## Install
@@ -31,35 +37,41 @@ Telegram Jam is an [exteraGram](https://exteragram.app) plugin plus a small self
 ## Usage
 
 1. Open a private chat and choose **Start Jam** in the chat menu (or send `!startjam`).
-2. The other person taps the `!acceptjam <code>` command in the invite, copies it and sends it.
-3. Play any track. It starts for both of you once the other client has it.
-4. Open **Jam panel** from the chat menu to seek, pause, change who controls the player, leave or end the Jam.
+2. The other person taps the `!acceptjam <code>` command in the invite, copies it and sends it. The code works once and for 5 minutes.
+3. To add people, open a private chat with each and choose **Invite to Jam**.
+4. Play any track. It starts for everyone once each client has it (up to a 20 second wait).
+5. **Jam panel** in the chat menu: seek, pause, members, host transfer, kick and block list.
 
 Commands (the `!` prefix is configurable):
 
 | Command | What it does |
 |---|---|
-| `!startjam` | Create a Jam and send an invite |
-| `!acceptjam <code>` | Join a Jam; the server comes from the code |
+| `!startjam` | Create a lobby and invite this person |
+| `!invitejam` | Invite this person to your lobby (creator only) |
+| `!acceptjam <code>` | Join a lobby; the server comes from the code |
 | `!declinejam` | Decline an invite |
-| `!jamstatus` | Show role, control mode and server |
-| `!leavejam` | Leave; a leaving host hands over to the guest |
-| `!endjam` | End the Jam for both (host only) |
+| `!jamstatus` | Show role, members and server |
+| `!leavejam` | Leave; the lobby goes on without you |
+| `!endjam` | End the Jam for everyone (host or creator) |
 
 ## Settings
 
 | Setting | Default | Notes |
 |---|---|---|
-| Jam server address | `wss://jam.ltyt.me/jam` | Used when you create a Jam. Guests take the host's server from the invite. |
-| Default control | Host only | Whether a new Jam lets the guest control the player. |
-| Delete track copies after Jam | On | Removes the copies and service messages the plugin sent. |
+| Jam server address | `wss://jam.ltyt.me/jam` | Used when you create a lobby. Guests take the server from the invite. |
+| Check server | — | Connect to the configured server and show ping, version, lobby size and whether it accepts this plugin. |
+| Default control | Host only | Whether everyone may control the player in a new lobby. |
+| Delete track copies after Jam | On | Removes the track copies and invites the plugin sent. |
+| Jam tab in folders | Off | Experimental: while in a Jam, a tab among chat folders opens the panel. Needs chat folders. |
 | Panel port | any free port | Fixed local port for the panel, e.g. `8765`. Falls back to a free port if busy. |
+| Check for updates | On | Look for a new version on start. Only notifies. "Check now" is next to it. |
 
 ## Repository layout
 
 - `plugin/` - the exteraGram plugin.
 - `server/` - Node.js WebSocket server (`npm test` runs the test suite).
 - `deploy/` - Nginx, Caddy and systemd examples.
+- `cloud/update-info/` - the update-check function for Yandex Cloud (in Russian).
 - `docs/` - [protocol](docs/protocol.md), [self-hosting](docs/self-hosting.md), [privacy](docs/privacy.md) (in Russian).
 
 ## Development

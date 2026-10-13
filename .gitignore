@@ -4,3 +4,5 @@ npm-debug.log*
 __pycache__/
 *.pyc
 *.bak
+plugin/
+cloud/

@@ -1,6 +1,6 @@
 {
   "name": "telegram-jam-server",
-  "version": "0.9.0",
+  "version": "0.11.0",
   "private": true,
   "description": "Memory-limited WebSocket synchronization server for Telegram Jam.",
   "type": "module",
